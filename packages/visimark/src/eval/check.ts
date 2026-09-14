@@ -14,7 +14,7 @@ import { closest } from "../report/levenshtein.js";
 import { parseIsoDate } from "./dates.js";
 import { evalExpr, type EvalEnv } from "./evaluate.js";
 import { describeCallProblem, FUNCTIONS, isReduce } from "./functions.js";
-import { chartNode, dependencies, refText, resolve, topoOrder } from "./graph.js";
+import { canonicalName, chartNode, dependencies, refText, resolve, topoOrder } from "./graph.js";
 import { buildArtifact, hasEngine, type Series, suggestEngine } from "../artifact/index.js";
 import { resolveArtifactPath } from "../artifact/path.js";
 import { classify } from "../artifact/stale.js";
@@ -406,7 +406,10 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
           failure = "`" + name + "` needs numbers";
           break;
         }
-        const plain = name.includes(".") ? name.slice(name.indexOf(".") + 1) : name;
+        // the unit and precision maps are keyed by canonical header text, so a
+        // series named through an alias must be translated before either lookup
+        const written = name.includes(".") ? name.slice(name.indexOf(".") + 1) : name;
+        const plain = canonicalName(sheet, written);
         const colId = `${c.sheetId}.${plain}`;
         built.push({
           name,
@@ -580,7 +583,7 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
   }
 
   // WARN: a scalar defined, never read, never anchored, and otherwise clean
-  const referenced = collectReferenced(model);
+  const { referenced, usedAliases } = collectReferenced(model);
   const anchored = new Set(model.anchors.map((a) => `${a.sheetId}.${a.name}`));
   for (const sheet of model.sheets.values()) {
     for (const b of sheet.scalars.values()) {
@@ -596,6 +599,14 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
         suggestion: closest(b.name, [...referenced].map(idName)) ?? undefined,
         span: b.span,
       });
+    }
+  }
+
+  // WARN: an `is` alias declared and never used anywhere
+  for (const sheet of model.sheets.values()) {
+    for (const [symbol, entry] of sheet.aliases) {
+      if (usedAliases.has(`${sheet.id}.${symbol}`)) continue;
+      emit({ code: "WARN", sheetId: sheet.id, name: symbol, span: entry.span });
     }
   }
 
@@ -657,7 +668,8 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
   /** a label column's cells, verbatim */
   function readLabels(sheetId: string, name: string): string[] | string {
     const sheet = model.sheets.get(sheetId);
-    const idx = sheet?.columnIndex.get(name);
+    // `columnIndex` is keyed by header text; `labelled` may name an alias
+    const idx = sheet?.columnIndex.get(canonicalName(sheet, name));
     if (!sheet?.table || idx === undefined) {
       return "`" + name + "` is not a column of this sheet";
     }
@@ -1313,10 +1325,16 @@ function anchorValueText(model: DocModel, id: string): string | undefined {
   return undefined;
 }
 
-function collectReferenced(model: DocModel): Set<string> {
+function collectReferenced(model: DocModel): { referenced: Set<string>; usedAliases: Set<string> } {
   const out = new Set<string>();
+  const usedAliases = new Set<string>();
+  const markAlias = (sheetId: string, name: string): void => {
+    const sheet = model.sheets.get(sheetId);
+    if (sheet?.aliases.has(name)) usedAliases.add(`${sheetId}.${name}`);
+  };
   const visit = (e: Expr, sheetId: string): void => {
     if (e.type === "ref") {
+      markAlias(e.qualifier ?? sheetId, e.name);
       const r = resolve(model, sheetId, e);
       if (r.kind === "scalar" || r.kind === "doc-scalar" || r.kind === "column") {
         out.add(r.binding.id);
@@ -1332,8 +1350,15 @@ function collectReferenced(model: DocModel): Set<string> {
     for (const b of sheet.columns.values()) visit(b.expr, b.sheetId);
     for (const b of sheet.scalars.values()) visit(b.expr, b.sheetId);
     for (const a of sheet.assertions) visit(a.expr, a.sheetId);
+    for (const c of sheet.charts) {
+      for (const full of [...c.series, c.labels]) {
+        const dot = full.indexOf(".");
+        if (dot === -1) markAlias(c.sheetId, full);
+        else markAlias(full.slice(0, dot), full.slice(dot + 1));
+      }
+    }
   }
-  return out;
+  return { referenced: out, usedAliases };
 }
 
 function idName(id: string): string {
