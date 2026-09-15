@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.3 - 2026-09-15
+
 - A quoted GFM header is now a legal column-rule left-hand side, and
   `"Header" is symbol` names it for use in formulas. `is` is now a reserved
   word: a document that used it as a column or scalar name will start getting
