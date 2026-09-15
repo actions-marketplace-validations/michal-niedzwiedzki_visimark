@@ -2,7 +2,6 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { writeArtifact } from "../artifact/write.js";
 import { check } from "../eval/check.js";
-import { topoOrder } from "../eval/graph.js";
 import type { Value } from "../eval/value.js";
 import { build } from "../model/build.js";
 import type { DocModel } from "../model/types.js";
@@ -10,6 +9,7 @@ import { locate, NO_FORMULAS_MARKER } from "../parse/document.js";
 import { infer } from "../infer/propose.js";
 import { planInfer } from "../infer/write.js";
 import { formatCheck } from "../report/format.js";
+import { explainJson, explainText, explainView } from "../report/explain.js";
 import { formatInfer } from "../report/infer.js";
 import {
   emitJson,
@@ -423,13 +423,7 @@ export function cmdExplain(args: string[], out: Writer, err: Writer): number {
   }
   const model = build(locate(source));
   const checkResult = check(model, { docPath: path });
-  const { order, assertionIds, chartIds } = topoOrder(model);
-  const chartResults = checkResult.charts;
-  const chartState = new Map(chartResults.map((c) => [`${c.sheetId}.${c.name}`, c]));
-  const importState = checkResult.imports;
-
-  const wanted = sheets.length > 0 ? sheets : [...model.sheets.keys()];
-  for (const sid of wanted) {
+  for (const sid of sheets.length > 0 ? sheets : model.sheets.keys()) {
     if (!model.sheets.get(sid)) {
       const msg = `visimark: no sheet #${sid}`;
       err(msg);
@@ -437,126 +431,19 @@ export function cmdExplain(args: string[], out: Writer, err: Writer): number {
       return 2;
     }
   }
+  const view = explainView(model, checkResult, sheets);
 
   if (json) {
-    emitJson(out, {
-      command: "explain",
-      visimark: readVersion(),
-      status: "ok",
-      file: path,
-      documentScope: [...model.docScope.values()].map((b) => ({
-        name: b.name,
-        rule: slice(model, b),
-      })),
-      sheets: wanted.map((sid) => {
-        const sheet = model.sheets.get(sid)!;
-        const localOrder = order
-          .filter((b) => b.sheetId === sid && !assertionIds.has(b.id) && !chartIds.has(b.id))
-          .map((b) => b.name);
-        const importSt = importState.get(sid);
-        return {
-          id: sid,
-          hasTable: Boolean(sheet.table),
-          ...(sheet.imported
-            ? {
-                import: {
-                  path: sheet.imported.path,
-                  delimiter: sheet.imported.delimiter,
-                  labels: sheet.imported.labels,
-                  mode: sheet.imported.labelsMode,
-                  stamp: sheet.imported.stampDigest ? `sha256:${sheet.imported.stampDigest}` : null,
-                  stampStatus: importSt?.state ?? null,
-                },
-              }
-            : {}),
-          inputs: [...sheet.inputColumns],
-          aliases: [...sheet.aliases].map(([symbol, entry]) => ({ symbol, header: entry.header })),
-          rules: [...sheet.columns.values()].map((b) => ({ name: b.name, rule: slice(model, b) })),
-          scalars: [...sheet.scalars.values()].map((b) => ({
-            name: b.name,
-            rule: slice(model, b),
-          })),
-          order: localOrder,
-          assertions: sheet.assertions.map((a) => a.source.replace(/^assert\s+/, "")),
-          charts: sheet.charts.map((c) => {
-            const r = chartState.get(`${c.sheetId}.${c.name}`);
-            return {
-              name: c.name,
-              engine: c.engine,
-              series: c.series,
-              labels: c.labels,
-              path: r?.path ?? null,
-              state: r?.state ?? null,
-            };
-          }),
-        };
-      }),
-    });
+    emitJson(out, explainJson(view, path));
     return 0;
   }
 
-  if (model.docScope.size > 0) {
-    out("document scope");
-    for (const b of model.docScope.values()) {
-      out(`  ${b.name} = ${slice(model, b)}`);
-    }
-    out("");
-  }
-
-  for (const sid of wanted) {
-    const sheet = model.sheets.get(sid)!;
-    out(`#${sid}${sheet.table ? "" : "  (no table)"}`);
-    if (sheet.imported) {
-      const st = importState.get(sid);
-      const delim =
-        sheet.imported.delimiter !== "," ? ` delimited ${sheet.imported.delimiter}` : "";
-      const labelKeyword = sheet.imported.labelsMode ?? "labelled";
-      const labels = sheet.imported.labels
-        ? ` ${labelKeyword} ${sheet.imported.labels.join(", ")}`
-        : "";
-      out(`  import:  ${sheet.imported.path}${delim}${labels}  [${st?.state ?? "unknown"}]`);
-    }
-    if (sheet.inputColumns.size > 0) {
-      out(`  inputs:  ${[...sheet.inputColumns].join(", ")}`);
-    }
-    if (sheet.aliases.size > 0) {
-      out("  aliases:");
-      for (const [symbol, entry] of sheet.aliases) out(`    ${symbol} → "${entry.header}"`);
-    }
-    if (sheet.columns.size > 0) {
-      out("  rules:");
-      for (const b of sheet.columns.values()) out(`    ${b.name} = ${slice(model, b)}`);
-    }
-    if (sheet.scalars.size > 0) {
-      out("  scalars:");
-      for (const b of sheet.scalars.values()) out(`    ${b.name} = ${slice(model, b)}`);
-    }
-    const localOrder = order
-      .filter((b) => b.sheetId === sid && !assertionIds.has(b.id) && !chartIds.has(b.id))
-      .map((b) => b.name);
-    if (localOrder.length > 0) out(`  order:   ${localOrder.join(" → ")}`);
-    if (sheet.assertions.length > 0) {
-      out("  assertions:");
-      for (const a of sheet.assertions) out(`    ${a.source.replace(/^assert\s+/, "")}`);
-    }
-    if (sheet.charts.length > 0) {
-      out("  charts:");
-      for (const c of sheet.charts) {
-        const r = chartState.get(`${c.sheetId}.${c.name}`);
-        const where = r?.path ? ` → ${r.path}` : "";
-        const state = r ? `  [${r.state}]` : "";
-        out(
-          `    ${c.name} = ${c.engine} of ${c.series.join(", ")} labelled ${c.labels}${where}${state}`,
-        );
-      }
-    }
-    out("");
-  }
+  // A document with no scope bindings and no sheets renders to nothing at all —
+  // guard the write, or the single `out()` would emit the blank line that the
+  // per-line loop this replaced never reached.
+  const text = explainText(view);
+  if (text) out(text);
   return 0;
-}
-
-function slice(model: DocModel, b: { expr: { start: number; end: number } }): string {
-  return model.source.slice(b.expr.start, b.expr.end);
 }
 
 export type Writer = (line: string) => void;
