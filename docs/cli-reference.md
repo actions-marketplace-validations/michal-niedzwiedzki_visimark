@@ -30,6 +30,12 @@ and WSL provide it, plain PowerShell does not).
 takes no file and is not part of `explain`. The same entries, generated from
 the same registry, are in [`function-reference.md`](function-reference.md).
 
+Each entry states where the result's width comes from, alongside its shape and
+its errors — the question a `PRECISION` finding raises. `ref ROUND` reports
+`precision  the value of \`places\`` and, separately, how it breaks a tie;
+`ref AVG` reports `must be declared`. Under `--json` the rule is structured
+(`{"from": "argument-scale", "param": "s"}`), not only prose.
+
 `visimark --version` (also `-v` or `version`) prints `visimark <version>` and
 exits `0`. `visimark --help` (also `-h` or `help`) prints the usage summary.
 
@@ -75,7 +81,8 @@ nothing.
 | `CYCLE` | problem | Values depend on each other in a circle. The report prints the whole path round it. | by hand |
 | `TYPE` | problem | An expression produced something that cannot go where it was asked to go — storing a boolean in a cell, or calling a function wrongly. | by hand |
 | `SHEET` | problem | A `vmark` block's relationship to its table is broken: no table above it, or a table that belongs to something else — or the sheet id itself is not a valid identifier. | by hand |
-| `ANCHOR` | problem | An anchor comment has no number in front of it to rewrite, an image anchor and a chart declaration do not match up, or the comment announces itself as an anchor (`<!--vmark=…-->`) but does not parse. | by hand |
+| `ANCHOR` | problem | An anchor comment has nothing in front of it that can be rewritten, an image anchor and a chart declaration do not match up, or the comment announces itself as an anchor (`<!--vmark=…-->`) but does not parse. | by hand |
+| `PRECISION` | problem | A binding writes numbers but has no decimal width: none declared with `precision N`, and none follows from its formula — division, `AVG` and `SQRT` do not bound their result's decimals. Also reported where a value is large enough that its declared width would print digits the engine never computed. | by hand (`visimark infer` proposes the clause where the document's own figures verify one) |
 | `ASSERT` | problem | An `assert` statement evaluated false. The report shows the expression and, below it, the same expression with each named value filled in. | by hand |
 | `ARTIFACT` | problem | A declared artifact cannot be built or written — a pie of negative values or summing to zero, a blank or non-numeric series, an unknown chart type, a path outside the document's directory, or a target file VisiMark did not generate. | by hand |
 | `IMPORT` | problem | A declared local import (`from <path>`) cannot be resolved — no stamp yet, a missing file, a malformed stamp, a path outside the document's directory, malformed CSV, a binding that shadows an imported (read-only) column, or (for `unlabelled`) a declared-name count that does not match a row's field count, a duplicate declared name, or an invalid declared name. A stamp that no longer matches the file is `STALE` instead. | `visimark fmt` adds a missing stamp; everything else by hand |

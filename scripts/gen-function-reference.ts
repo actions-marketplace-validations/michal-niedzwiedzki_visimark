@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import {
   describeFunction,
   functionNames,
+  precisionPhrase,
   type FnEntry,
 } from "../packages/visimark/src/lang/reference.js";
 
@@ -34,12 +35,19 @@ const meaning = (e: FnEntry): string =>
   [e.summary, ...e.errors.map((x) => `${x.when} is a \`${x.code}\` error`)].join("; ");
 
 export function renderTable(): string {
-  const rows = entries().map((e) => `| \`${sig(e)}\` | ${e.kind} | ${e.arity} | ${meaning(e)} |`);
+  const cell = (e: FnEntry): string => {
+    const phrase = precisionPhrase(e.precision);
+    // the one variant that asks the author to do something gets the emphasis
+    return e.precision.from === "declared" ? `**${phrase}**` : phrase;
+  };
+  const rows = entries().map(
+    (e) => `| \`${sig(e)}\` | ${e.kind} | ${e.arity} | ${cell(e)} | ${meaning(e)} |`,
+  );
   return [
     BEGIN,
     "",
-    "| Function | Kind | Arity | Meaning |",
-    "|----------|------|------:|---------|",
+    "| Function | Kind | Arity | Precision | Meaning |",
+    "|----------|------|------:|-----------|---------|",
     ...rows,
     "",
     "Parameters, precision and worked examples for each are in",
@@ -57,7 +65,8 @@ function section(e: FnEntry): string {
   lines.push("| Parameter | Type | Meaning |", "|---|---|---|");
   for (const p of e.params) lines.push(`| \`${p.name}\` | ${p.type} | ${p.note} |`);
   lines.push("", `**Returns:** ${e.returns}.`, "");
-  if (e.precision) lines.push(`**Precision:** ${e.precision}`, "");
+  lines.push(`**Precision:** ${precisionPhrase(e.precision)}.`, "");
+  if (e.rounding) lines.push(`**Rounding:** ${e.rounding}`, "");
   if (e.errors.length > 0) {
     lines.push("**Errors**", "");
     for (const x of e.errors) lines.push(`- ${sentence(x.when)} — \`${x.code}\``);
