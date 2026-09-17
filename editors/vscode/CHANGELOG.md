@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.5 - 2026-09-17
+
 - A binding's head may carry a `precision N` clause, and a value's decimal width
   no longer comes from an anchor's text. `precision` is now a reserved word.
   Undeclared division, `AVG` and `SQRT` report the new `PRECISION` diagnostic.

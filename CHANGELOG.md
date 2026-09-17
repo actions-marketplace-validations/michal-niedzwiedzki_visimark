@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.5 - 2026-09-17
+
 ### Changed
 
 - **A value's decimal width no longer comes from prose.** A binding's head may
@@ -28,6 +30,13 @@
 
 ### Added
 
+- **`visimark ref [NAME] [--json]`** — the one command that reads no file: it
+  answers about the language, not about a document, which is why it is not
+  folded into `explain`. With no name it lists all thirteen builtins, each
+  against its signature, kind and arity; a name prints that function's full
+  signature, parameters, return type, precision rule, errors and worked
+  examples. An unknown name is a `USAGE` exit with a did-you-mean suggestion,
+  the same fuzzy match `check` already uses for undefined names.
 - **`PRECISION` finding** — a numeric binding with no declared width and none
   derivable, or a value large enough that its declared width would print digits
   the engine never computed (`Decimal.precision` is 40 *significant* digits, so
@@ -350,6 +359,7 @@ record that the publish happened, and making the history read clean after the
 fact is the kind of underived edit this project exists to catch. There is no
 0.1.0 of the VS Code extension.
 
+[0.1.5]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.5
 [0.1.4]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.4
 [0.1.3]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.3
 [0.1.2]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.2
