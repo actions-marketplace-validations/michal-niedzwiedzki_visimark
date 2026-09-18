@@ -14,10 +14,108 @@ import type { Quest } from "./quest.js";
 import type { Terminal } from "./terminal.js";
 import { byId } from "./dom.js";
 
+/**
+ * How long typing has to stop before the pipeline runs — and the floor for it
+ * (review §2.10).
+ *
+ * The review asked for this to be measured before anything was moved off the
+ * main thread, and warned against assuming which phase dominates. Measured in
+ * Chromium against a generated table, with the whole pass run from the page:
+ *
+ * | rows | source | fmt | pgEval | pgExplain | marked | innerHTML | pass |
+ * |---:|---:|---:|---:|---:|---:|---:|---:|
+ * | 50 | 2 KB | 3 | 3 | 5 | 0.3 | 2 | **12 ms** |
+ * | 100 | 3 KB | 6 | 5 | 5 | 0.4 | 3 | **20 ms** |
+ * | 500 | 16 KB | 50 | 45 | 47 | 1.6 | 13 | **155 ms** |
+ * | 1000 | 31 KB | 224 | 215 | 201 | 2.7 | 23 | **666 ms** |
+ * | 2000 | 64 KB | 613 | 808 | 791 | 4.9 | 46 | **2,262 ms** |
+ *
+ * Two things fall out of that, and both contradict a guess the review was
+ * careful not to make.
+ *
+ * **Rendering is not the problem.** `marked.parse` never reaches 5 ms and
+ * the preview write never reaches 50; together they are under 3% of the pass
+ * at every size. Chart rendering does not appear because these documents
+ * carry none, and a chart is bounded by its series, not by the table.
+ *
+ * **The cost is spread evenly across the three engine calls, and each is
+ * superlinear** — doubling the rows roughly quadruples the pass. `fmt`,
+ * `pgEval` and `pgExplain` each locate, build and check the whole document
+ * from scratch, so the page pays for three full passes over the same text (a
+ * fourth when a quest is watching for STALE findings). That is a real finding
+ * and it is *not* fixed here: sharing one build across the three is an engine
+ * and API change, which is the "belongs in a different review" case §2.10
+ * names. See docs/design/playground-pipeline-cost-plan.md.
+ *
+ * What ships here is the cheap half. A pass is timed, and the next debounce
+ * is at least as long as the last pass took, so a document heavy enough to
+ * lock the tab does it once per pause rather than continuously — the page
+ * stays usable while typing instead of fighting itself. For everything the
+ * playground actually holds (largest bundled document: 8 KB, 14 table rows)
+ * this never leaves the 500 ms floor.
+ */
 const EDIT_DEBOUNCE = 500;
+
+/** The pass cost past which the debounce stretches, and past which the page
+ *  says out loud what it is doing rather than just feeling slow. */
+const SLOW_PASS = 250;
+
+/** Never wait longer than this, however expensive the document: past a few
+ *  seconds the page stops looking busy and starts looking broken. */
+const MAX_DEBOUNCE = 3000;
+
+/**
+ * How long to wait after the next keystroke, given what the last pass cost.
+ *
+ * A document heavy enough to lock the tab then locks it once per typing pause
+ * instead of continuously, so the page stays usable while someone types in it
+ * rather than fighting them for the thread.
+ */
+export function nextDebounce(lastPassMs: number): number {
+  return Math.min(Math.max(EDIT_DEBOUNCE, lastPassMs), MAX_DEBOUNCE);
+}
 
 export function pluralize(n: number, w: string): string {
   return `${n} ${w}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * A rendered chart SVG, as something an `<img src>` will accept.
+ *
+ * This used to be `btoa(unescape(encodeURIComponent(svg)))` (review §2.12).
+ * `unescape` is Annex B legacy and base64 costs a third of the payload, so the
+ * replacement percent-encodes instead — but **only the characters that have
+ * to be**, which is the part worth spelling out, because plain
+ * `encodeURIComponent(svg)` is *worse* than the base64 it replaces. An SVG is
+ * mostly `<`, `>`, `"`, `/` and spaces; escaping all of them costs three bytes
+ * each. Measured on 12-charts.md's `order-spend.svg` (2,770 bytes raw):
+ *
+ * | encoding | data URI length |
+ * |---|---|
+ * | `btoa(unescape(…))`, before | 3,720 |
+ * | `encodeURIComponent(svg)` | 4,167 |
+ * | only what must be escaped | **2,829** |
+ *
+ * What must be escaped: `%` (or an existing escape is re-read), `#` (or the
+ * rest of the document becomes a fragment identifier), and anything outside
+ * printable ASCII — control characters because the URL parser strips ASCII
+ * newlines and tabs out of a URL, which would silently run two words of a
+ * chart label together, and non-ASCII because a data URI has no charset
+ * parameter to interpret those bytes with. Everything else survives verbatim.
+ *
+ * **Not a `blob:` URL**, which would be smaller still. Every blob URL has to
+ * be handed back with `URL.revokeObjectURL`, and this runs from
+ * `refreshDerived()` on a 500ms typing debounce over a document that can hold
+ * several charts — so a missed revoke is a leak that grows while you type,
+ * not a theoretical one. A data URI is owned by the `<img>` and dies with it.
+ *
+ * The scheme is granted by `img-src 'self' data:` in playground.html's CSP
+ * (review §2.6); `data:` and `blob:` are separate grants, so the two decisions
+ * have to move together.
+ */
+export function svgDataUri(svg: string): string {
+  const escaped = svg.replace(/[%#]|[^\x20-\x7E]/gu, (ch) => encodeURIComponent(ch));
+  return `data:image/svg+xml,${escaped}`;
 }
 
 export interface Pipeline {
@@ -33,6 +131,10 @@ export interface Pipeline {
   hasStaleFindings(source: string): boolean;
   /** Cancels a debounced refresh that has not fired yet. */
   cancelPendingRefresh(): void;
+  /** Registers a callback for the end of each typing-settle pass — where the
+   *  visitor's buffer is saved (review §2.7), and so the moment anything
+   *  showing "this file has been edited" has to catch up. */
+  onSettled(fn: () => void): void;
   knowledgeText(): string;
 }
 
@@ -51,6 +153,11 @@ export function createPipeline(
   const metaEl = byId("build-meta");
 
   let editTimer: ReturnType<typeof setTimeout> | null = null;
+  const settled: (() => void)[] = [];
+  /** How long the last full pass took, which is what the next wait is sized
+   *  against (review §2.10). */
+  let lastPass = 0;
+  let saidItIsSlow = false;
 
   function setStatus(ok: boolean, note?: string): void {
     flagEl.className = `flag${ok ? "" : " fail"}`;
@@ -120,7 +227,7 @@ export function createPipeline(
     previewEl.querySelectorAll<HTMLImageElement>("img[src]").forEach((img) => {
       const svg = svgByPath[img.getAttribute("src") ?? ""];
       if (!svg) return;
-      img.src = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+      img.src = svgDataUri(svg);
     });
   }
 
@@ -148,6 +255,23 @@ export function createPipeline(
     }
 
     try {
+      // **The preview is not a trust boundary, and here is the condition on
+      // which that stops being true** (review §2.6).
+      //
+      // `source` is the CodeMirror buffer. Everything that can reach it today
+      // is either the visitor's own typing or a document committed to this
+      // repository and fetched from this origin — so unsanitized Markdown
+      // here is self-XSS at worst, and sanitizing would cost the preview the
+      // inline HTML that Markdown legitimately allows.
+      //
+      // It becomes a real boundary the moment a document reaches this buffer
+      // from anywhere the visitor is not: a document in the URL, an import
+      // from a gist, a paste target, a shared workspace, anything at all
+      // authored by one person and rendered for another. Note that `?file=`
+      // (review §2.8) is *not* that — it selects from FILE_SOURCES by name
+      // and cannot carry content. If you are adding the feature that changes
+      // this, the sanitizer goes in on the same commit, and the CSP above
+      // stops being the only control.
       previewEl.innerHTML = marked.parse(source);
       embedCharts(evalResult?.charts);
     } catch (e) {
@@ -156,6 +280,24 @@ export function createPipeline(
   }
 
   function onInactivity(): void {
+    const started = performance.now();
+    runPass();
+    lastPass = performance.now() - started;
+    if (lastPass > SLOW_PASS && !saidItIsSlow) {
+      saidItIsSlow = true;
+      // Said once, not once per pass: the point is to explain the lag, and
+      // repeating it every keystroke-settle would itself become the noise.
+      terminal.line(
+        `playground: this document takes ${Math.round(lastPass)}ms to check, so the live ` +
+          "update now waits that long after you stop typing — see §2.10 in " +
+          "docs/design/playground-pipeline-cost-plan.md",
+        "err",
+      );
+      terminal.trim();
+    }
+  }
+
+  function runPass(): void {
     terminal.clear();
     const result = runFmt();
     if (result?.changed) {
@@ -175,13 +317,18 @@ export function createPipeline(
     if (result && result.unfixable.length === 0) quest().signal("action:fmt-clean");
     if (result && result.unfixable.length > 0) quest().signal("action:fmt-failing");
     refreshDerived();
+    // The typing has stopped, so this is where the work is written through to
+    // localStorage (review §2.7) rather than on every keystroke — the same
+    // 500 ms settle the rest of this pass rides on.
+    store.persist(store.current());
+    for (const fn of settled) fn();
   }
 
   cm.on("change", (_instance, change) => {
     if (change.origin === "setValue") return;
     store.setText(store.current(), cm.getValue());
     if (editTimer !== null) clearTimeout(editTimer);
-    editTimer = setTimeout(onInactivity, EDIT_DEBOUNCE);
+    editTimer = setTimeout(onInactivity, nextDebounce(lastPass));
   });
 
   // Lockstep scroll: PREVIEW tracks EDITOR (and vice versa) by scroll
@@ -229,6 +376,9 @@ export function createPipeline(
     },
     cancelPendingRefresh() {
       if (editTimer !== null) clearTimeout(editTimer);
+    },
+    onSettled(fn) {
+      settled.push(fn);
     },
     knowledgeText: () => knowledgeEl.textContent ?? "",
   };
