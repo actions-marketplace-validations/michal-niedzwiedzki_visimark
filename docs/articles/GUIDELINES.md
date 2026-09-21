@@ -1,7 +1,7 @@
 # Writing a VisiMark article
 
 House rules for the articles in this folder. They came out of writing
-[Markdown woes: Looks right, is wrong](markdown-woes-looks-good-is-wrong/looks-right-is-wrong.md),
+[Markdown woes: Looks right, is wrong](looks-good-is-wrong/markdown-woes-looks-right-is-wrong.md),
 which is the worked example: when a rule here is unclear, read how that article
 does it.
 
@@ -33,10 +33,17 @@ lines in as the article goes out:
 # Markdown woes: Looks right, is wrong
 
 Tags: Markdown, CI, AI, GitHub
+Author: Michał Niedźwiedzki
 
 Posted: https://dev.to/...
 Reposted: https://visimark.hashnode.dev/...
 ```
+
+Every article also gets an entry in `articles.json` in this folder (slug,
+title, author, tags, teaser, icon, path). That file is the table of contents:
+the home page's carousel, `articles.html` and the reader page `article.html`
+(`article.html?slug=<slug>`) all read it, and the reader shows the Markdown
+file below the title, without the metadata block.
 
 Syndicated copies point their canonical URL back at the original posting, so
 the copies do not compete with it.
