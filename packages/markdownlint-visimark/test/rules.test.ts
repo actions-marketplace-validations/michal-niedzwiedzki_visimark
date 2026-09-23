@@ -34,13 +34,14 @@ beforeEach(() => {
   resetFindingsCache();
 });
 
-test("one rule per FindingCode, seventeen of them", () => {
+test("one rule per FindingCode, seventeen of them, plus the engine-error rule", () => {
   // Registration order is DESCRIPTIONS' order, which transcribes the §10
-  // taxonomy table rather than the FindingCode union. Nothing observable
-  // depends on it — markdownlint sorts its output by rule name — so this
-  // asserts the set, and the description test below pins the order.
-  expect(rules).toHaveLength(17);
-  expect(rules.map((r) => r.names[0]).sort()).toEqual(
+  // taxonomy table rather than the FindingCode union, plus the engine-error
+  // rule appended last. Nothing observable depends on order — markdownlint
+  // sorts its output by rule name — so this asserts the set.
+  expect(rules).toHaveLength(18);
+  const names = rules.map((r) => r.names[0]).sort();
+  expect(names).toEqual(
     [
       "visimark-stale",
       "visimark-date",
@@ -59,6 +60,7 @@ test("one rule per FindingCode, seventeen of them", () => {
       "visimark-warn",
       "visimark-note",
       "visimark-coverage",
+      "visimark-engine-error",
     ].sort(),
   );
   for (const rule of rules) {
@@ -81,7 +83,9 @@ test("every rule reads the micromark parser and describes itself", () => {
     expect(rule.parser).toBe("micromark");
     expect(rule.description.length).toBeGreaterThan(0);
   }
-  expect(rules.map((r) => r.description)).toEqual(Object.values(DESCRIPTIONS));
+  expect(rules.slice(0, 17).map((r) => r.description)).toEqual(Object.values(DESCRIPTIONS));
+  expect(rules[17]!.names[0]).toBe("visimark-engine-error");
+  expect(rules[17]!.description).toBe("VisiMark could not analyse this document");
 });
 
 test("information is a URL instance, not a string", () => {
@@ -95,7 +99,7 @@ test("information is a URL instance, not a string", () => {
   }
 });
 
-test("the seventeen rules pay one analyze() call per document", () => {
+test("all eighteen rules pay one analyze() call per document", () => {
   for (const rule of rules) {
     rule.function(paramsFor(stale), () => {});
   }
@@ -103,16 +107,22 @@ test("the seventeen rules pay one analyze() call per document", () => {
 });
 
 test("a second document with different content invalidates the cache", () => {
-  expect(findingsFor(stale)).toHaveLength(1);
-  expect(findingsFor(clean)).toHaveLength(0);
+  const first = findingsFor(stale);
+  const second = findingsFor(clean);
+  expect(first.ok && first.findings).toHaveLength(1);
+  expect(second.ok && second.findings).toHaveLength(0);
   expect(parseCount()).toBe(2);
 });
 
 test("a second document with byte-identical content still reports, from the cache", () => {
   const first = findingsFor(stale);
   const second = findingsFor(stale.slice(0)); // equal content, one analyze() call
-  expect(second).toHaveLength(1);
-  expect(second[0]!.code).toBe(first[0]!.code);
+  expect(first.ok).toBe(true);
+  expect(second.ok).toBe(true);
+  if (first.ok && second.ok) {
+    expect(second.findings).toHaveLength(1);
+    expect(second.findings[0]!.code).toBe(first.findings[0]!.code);
+  }
   expect(parseCount()).toBe(1);
 });
 
@@ -124,6 +134,7 @@ test("prose with no table and no vmark block produces nothing", () => {
       calls++;
     });
   }
-  expect(findingsFor(prose)).toHaveLength(0);
+  const result = findingsFor(prose);
+  expect(result.ok && result.findings).toHaveLength(0);
   expect(calls).toBe(0);
 });
