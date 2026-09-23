@@ -156,20 +156,27 @@ whether v2 row 20 (publishing scalars to YAML properties) has a foundation.
 
 ### Recording Part 1
 
+Run on 2026-09-23.
+
 | # | What | Reading mode | Live Preview | Mobile | Notes |
 |---|------|---|---|---|---|
-| 1.1 | Anchors invisible | | | | |
-| 1.2 | `vmark` blocks plain | | | | |
-| 1.3 | Table cells verbatim | | | | |
-| 1.4 | Chart images resolve | | | | |
-| 1.5 | Drift doc renders clean | | | | |
-| 1.7 | Frontmatter survives `check` | n/a | n/a | n/a | exit code: |
+| 1.1 | Anchors invisible | yes | **no** | yes | Live Preview shows `<!--vmark=…-->` as literal text, regardless of where the cursor is |
+| 1.2 | `vmark` blocks plain | yes | yes | yes | Live Preview shows the block plain with the cursor outside it and reveals the fence with the cursor inside — ordinary Live Preview behaviour, and accepted |
+| 1.3 | Table cells verbatim | yes | yes | yes | trailing zeros intact; computed cells render clean in both renderers |
+| 1.4 | Chart images resolve | yes | yes | yes | relative `charts/*.svg` paths resolve with the vault opened at `docs/`; Live Preview renders the images clean but shows the image anchor at all times, focused or not — the §1.1 behaviour, and accepted with it |
+| 1.5 | Drift doc renders clean | yes | yes | yes | indistinguishable from `example-invoice.md` in both renderers |
+| 1.7 | Frontmatter survives `check` | n/a | n/a | n/a | exit code: 0, zero findings |
 
-Obsidian version: ______  Platform(s): ______  Restricted Mode on: Y / N
+Obsidian version: 1.13.7  Platform(s): desktop + Android  Restricted Mode on: **Y**
 
 **Any `no` in 1.1 or 1.3 is a format bug and outranks the fork-B decision.**
-Whatever the outcome, the result belongs in `visimark-design.md` §16, which
-currently says the question was never asked.
+
+**1.1's Live Preview `no` was reviewed and accepted** on
+[#176](https://github.com/michal-niedzwiedzki/visimark/issues/176), not
+softened here: Live Preview is an editing surface, seeing the anchor while
+authoring is useful rather than a defect, and reading mode — what a reader
+actually encounters — is unaffected. The result is recorded in
+`visimark-design.md` §16, which until now said the question was never asked.
 
 ---
 
