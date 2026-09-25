@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.8 - 2026-09-25
+
 ### Added
 
 - **A `param` may declare the set of values it accepts** (issue #241).
@@ -567,6 +569,7 @@ record that the publish happened, and making the history read clean after the
 fact is the kind of underived edit this project exists to catch. There is no
 0.1.0 of the VS Code extension.
 
+[0.1.8]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.8
 [0.1.7]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.7
 [0.1.6]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.6
 [0.1.5]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.5

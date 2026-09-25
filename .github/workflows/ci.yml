@@ -503,9 +503,25 @@ jobs:
           # bun add -g needs an absolute tarball path; a relative ./x.tgz is
           # parsed as a package name.
           # Both tarballs in one install, for the reason smoke-node gives.
-          # Note that this does *not* satisfy the MCP server's `visimark` pin
-          # from the local tarball under bun — the handshake step does that.
-          bun add -g "$(pwd)/$(ls visimark-[0-9]*.tgz)" "$(pwd)/$(ls visimark-mcp-*.tgz)"
+          # Unlike npm, bun does not dedupe the MCP server's exact `visimark`
+          # pin against a sibling tarball named in the same command — it goes
+          # to the registry regardless, which fails outright on a release-prep
+          # commit whose engine version has not been published yet (the
+          # ordinary case is unaffected, since by the time any later commit's
+          # CI runs, the pinned version is already live). An `overrides` entry
+          # in the global install's own package.json forces that resolution to
+          # the local tarball instead, so this step tests the packed engine
+          # regardless of what npm currently has. The later handshake step's
+          # byte-for-byte swap is still what actually proves it end to end;
+          # this just keeps the install itself from failing first.
+          # `bun pm bin -g` itself fails without a global package.json ("No
+          # package.json was found") — nothing has run `bun add -g` yet in
+          # this job, so the path is derived directly rather than through it.
+          engine_tgz="$(pwd)/$(ls visimark-[0-9]*.tgz)"
+          global_root="${BUN_INSTALL:-$HOME/.bun}/install/global"
+          mkdir -p "$global_root"
+          printf '{"overrides":{"visimark":"file:%s"}}' "$engine_tgz" > "$global_root/package.json"
+          bun add -g "$engine_tgz" "$(pwd)/$(ls visimark-mcp-*.tgz)"
           visimark --version | grep -qE '^visimark [0-9]'
           printf '# smoke\n' > smoke.md
           visimark check smoke.md
