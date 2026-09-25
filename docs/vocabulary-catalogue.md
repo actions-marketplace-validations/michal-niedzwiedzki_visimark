@@ -1,6 +1,6 @@
 # VisiMark — design-decision catalogue
 
-The language ships **thirteen functions and a fixed operator set**
+The language ships **sixteen functions and a fixed operator set**
 ([`visimark-design.md` §4](visimark-design.md#4-syntax)). This file is the register of
 every proposed change to the language or its tooling — a mapper, operator, or
 aggregate (sections A–D); a language feature (section E); a tooling or process
@@ -10,17 +10,28 @@ is historical; the register is not vocabulary-only.
 
 ## Requesting an addition
 
-**A vocabulary primitive** — one mapper, operator, or aggregate per issue — goes
-on the **Vocabulary request** template
-([`.github/ISSUE_TEMPLATE/vocabulary-request.yml`](../.github/ISSUE_TEMPLATE/vocabulary-request.yml)).
+Every request goes on a template in
+[`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/). The template picks the
+review track and decides, up front, whether the request earns a row here at all:
 
-**Anything else** — a language feature, a change to the format or the CLI, a
-tooling or workflow change — is a free-form issue. Give it a concrete proposal,
-a motivating document or scenario, and (for a language feature) a sketch of the
-syntax and what a document cannot express or verify without it. An issue too
-thin to assess is sent back for those pieces before review.
+| Template | What it is for | Lands as |
+|----------|----------------|----------|
+| **Vocabulary request** | One mapper, operator, aggregate, or sorting rule per issue | A row in **A–D** |
+| **Language feature** | What a document *means* — syntax, evaluation, the finding set, the format, write-back | A row in **E** |
+| **Tooling, CLI, or process** | What a *machine* sees — the command surface, CI, releasing, the workflow, the extension, repo layout | A row in **F** |
+| **Bug report** | The tool does something it does not claim to do | No row — unless the fix must *decide* unspecified behaviour, which promotes it to **E** or **F** |
+| **Site, playground, or docs** | The landing page, the playground, the tutorial, the examples, the reference docs | No row |
+| **Project direction or outreach** | Positioning, prioritisation, launches, audiences | **No row, ever** — there is no constraint to judge it against |
 
-Either way the process from issue to deciding comment is
+**The line between E and F is who consumes the change.** A document's meaning is
+section E. A command's invocation, exit code, output format and `--json` shape
+are section F, because a CI job depends on them and no document does — which is
+why `--json` ([#60](https://github.com/michal-niedzwiedzki/visimark/issues/60))
+is filed as `tooling`. A proposal that moves both is split into two issues at
+review time rather than decided as one.
+
+An issue too thin to assess is sent back for the missing fields before review.
+The process from issue to deciding comment is
 [`issue-runbook.md`](issue-runbook.md).
 
 A vocabulary request is judged against the design doc's constraints, not against Excel:
@@ -123,9 +134,11 @@ The current set is `+ - * / ^`, comparison `== != < <= > >=`, and `and or not`
 
 ## C. Reducers (vector → scalar)
 
-Collapse one column to one value. Every reducer takes exactly one argument, a
-bare column reference — `SUM(Price * Qty)` is refused so every intermediate is a
-column the reader can see ([§4](visimark-design.md#4-syntax)). The current set is `SUM MIN MAX AVG COUNT`.
+Collapse one column to one value. A reducer has one column parameter, a bare
+column reference, and its other parameters are scalars — `SUM(Price * Qty)` is
+refused so every intermediate is a column the reader can see
+([§4](visimark-design.md#4-syntax)). `NPV(rate, flows)` is the first reducer
+with a scalar parameter. The current set is `SUM MIN MAX AVG COUNT NPV IRR`.
 
 That last rule has a consequence worth stating plainly: because `SUM(IF(x > 0,
 1, 0))` is not expressible, **there is today no way to count or total a subset of
@@ -207,9 +220,12 @@ proposal with a `Status`.
 
 ## E. Language features
 
-Changes to the syntax, the evaluation model, the finding set, the format, or the
-CLI surface — anything that is not a single mapper / operator / reducer (those
-are sections A–C) and not a sorting rule (section D). Judged against
+Changes to the syntax, the evaluation model, the finding set, the format, or
+write-back — anything that alters **what a document means**. Not a single mapper
+/ operator / reducer (those are sections A–C) and not a sorting rule (section
+D). **Not the CLI surface**, either: options, exit codes and output formats are
+consumed by build pipelines rather than by documents, so they are section F.
+Judged against
 [§1](visimark-design.md#1-purpose) scope, the four
 [§2](visimark-design.md#2-constraints-that-shaped-the-design) constraints and the
 no-plugin rule, the shape system ([§4](visimark-design.md#4-syntax)) where it
@@ -220,18 +236,28 @@ touches expressions, and diffability ([§9](visimark-design.md#9-write-back)). A
 |---------|-----------------|------|------|---------|--------|
 | Generated artifacts (`chart` statements) | A `chart <name> as pie\|bar of <cols> labelled <col> [aspect w:h]` statement in a `vmark` block. The author states the artifact's path in an ordinary Markdown image carrying an anchor; `fmt` writes a deterministic SVG there and `check` proves it current by rendering and comparing bytes. Introduces a **third category of tool-owned output** — generated artifacts — plus an `ARTIFACT` finding, and widens `STALE` to cover an artifact that is out of date or absent. | A visualisation stops being a second source of truth: one dataset, regenerated and CI-verified like every other derived value, and readable on GitHub by anyone without VisiMark installed. Constraint 4 holds fully — no clock, network, ambient fonts or config, and a closed built-in engine set. The document states the path, mirroring the anchor model, so there is no naming convention, no normalisation and no collision analysis. Byte comparison replaces any checksum, giving exact invalidation with no algorithm anyone can depend on. Forbidding formulas in declarations keeps the calculation model in the language. | Requires clarifying [§1](visimark-design.md#1-purpose)'s "no presentation layer" non-goal, naming a third owned category in [§9](visimark-design.md#9-write-back), and scoping [§13](visimark-design.md#13-testing)'s one-line-diff guarantee to documents. `check` proves an artifact's provenance, never that the picture depicts the data faithfully — a limit new in kind, accepted as downstream of the primary mechanics. Author-chosen paths need a hard gate (relative, contained, no symlink escape, lowercase `.svg`, refuse to overwrite anything not VisiMark-marked). Cost is **L** — a rendering engine plus artifact writing, path validation and staleness. Greyscale discrimination weakens past ~5 series. | [#36](https://github.com/michal-niedzwiedzki/visimark/issues/36) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/36#issuecomment-5575507072) |
 | Whole-sheet materialization anchor for imports (`<!--vmark=sheet-->`) | A sheet-level anchor form that inserts/regenerates a full GFM table from an imported sheet's data directly in the document body, preserving the anchor as the update point. | Makes an otherwise-invisible imported CSV visible to an unmodified Markdown renderer without transferring file ownership; reuses the existing import integrity stamp unchanged. | Inlines a vector with no reduce step — a third vector consumer the shape system ([§4](visimark-design.md#4-syntax)) doesn't define, and one anchors have never done (today: scalar text only, [§3](visimark-design.md#3-document-model)). No proposed marker delimits the generated table's end (constraint 3). Directly reverses why generated artifacts are kept out of the document ([§13](visimark-design.md#13-testing)) and why imports exist at all ([§19](visimark-design.md#19-declared-local-data-imports)) — both settled to avoid exactly this kind of whole-table inline diff. | [#75](https://github.com/michal-niedzwiedzki/visimark/issues/75) | [REJECTED](https://github.com/michal-niedzwiedzki/visimark/issues/75#issuecomment-5655549317) |
+| Declared domain on `param` (`in [lo, hi]` / `in { … }`, presets `integer`/`natural`/`positive`/`positive integer`) | A `param` header may add a domain clause (a range, a finite set, and/or a closed-list preset, intersected) narrowing the legal scenario values below its declared width. A default outside the domain, or a domain with no legal value, is a new `DOMAIN` finding (exit `1`); an out-of-domain `eval --scenario` value is refused before evaluation under the existing `SCENARIO` code (exit `2`), distinct from an in-domain value that fails an `assert` (exit `1`, values printed). `eval`, `explain` and `ref --json` all gain domain reporting. No `fmt` write-back. | Lets a document state the askable envelope for a scenario search inline, rather than in a script beside the file — closing a gap `docs/design/scenario-params-spec.md` §7 named as future work when `#119` shipped. Stays inside the shape system (still a scalar); adds no plugin surface; a document with no domain-bearing param is byte-for-byte unaffected by `check`, `fmt`, `infer` or plain `eval`, confirmed by running the branch CLI on the issue's own "before" snippet. | Cost is **M**: a new finding code, one static check on the default, one scenario-value check, and a reporting field on three commands. Real syntax surface — a closed preset list, half-open ranges, glyph equivalents (`∈`, `ℤ`, `ℕ`, `ℤ⁺`) — all pinned in the spec rather than left to the implementer. Emptiness of a `positive`-only domain narrower than the param's declared precision is not statically detected, by design (walking the precision grid is out of scope); such a param silently refuses every scenario value. | [#241](https://github.com/michal-niedzwiedzki/visimark/issues/241) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/241#issuecomment-5821299735) |
+
 `assert` statements, generated artifacts (`chart`), the sheet-id /
-anchor-comment grammar hardening, and declared local data imports shipped —
-see the [Shipped register](#shipped).
+anchor-comment grammar hardening and declared local data imports shipped, and
+scenario parameters landed unreleased — see the [Shipped register](#shipped).
 
 ## F. Tooling and process
 
-The review workflow, CI, releasing, the command / skill set, repo layout, the
-structure of the design docs. Not a language change — but still a standing
-decision worth a citable reason.
+The CLI surface — commands, options, exit codes, the stdout/stderr split, the
+`--json` shape — plus CI, releasing, the review workflow, the command / skill
+set, the editor extension, repo layout, and the structure of the design docs.
+Not a change to what a document means, but everything a machine downstream of
+`visimark` depends on, and so still a standing decision worth a citable reason.
+
+A section F row states its **machine contract**: which exit codes are involved,
+what each stream carries, and whether an existing CI job or script behaves
+differently afterwards. That last question is section F's breaking-change test,
+the way "does a document that passes `check` today still pass?" is section E's.
 
 | Change | What it changes | Pros | Cons | Request | Status |
 |--------|-----------------|------|------|---------|--------|
+| Shared build across the document phases | An engine and API change, not a playground one. `fmt`, `eval`, `explain` and `check` each call `locate` + `build` + `check` over the same source text from scratch, so any caller that wants more than one of them pays for the document several times. Proposes an entry point that builds once and hands the built document to each phase — the same shape as the reader injection in [`browser-fs-port-plan.md`](design/browser-fs-port-plan.md), which turned an API that took a path into one that takes a port. | Measured, not guessed: the playground pays four full passes per typing-settle, 2,262 ms on a 2,000-row document for the three-call pass and nearer 2.9 s with the quest's STALE check — see [`playground-pipeline-cost-plan.md`](design/playground-pipeline-cost-plan.md) for the table. It is the largest single lever the playground has, and the CLI pays the same cost every time a command runs two phases. The phases already agree on what a built document is, so nothing new has to be invented. | Touches the engine's public surface, which is the reason review §2.10 refused to do it inside a playground change and the follow-up review's §2.13 asked for it to be tracked here instead of inside a `playground-`prefixed design doc. No motivating document needs it: every document the playground ships checks in 12–20 ms, so the win is real only for pasted input far larger than anything in the repository. That is the [§14](visimark-design.md#14-deferred) bar, and this does not clear it yet. | [review §2.13](reviews/2026-09-20-playground-followup.md) | `NEW` |
 | Reposition around verifiable numbers (growth programme) | Not a change to the language. Proposes leading with "make numbers in Markdown verifiable" rather than "spreadsheet mechanics for Markdown", and sequencing growth work — README and landing-page rewrite, a browser playground, marketplace publishing, five worked examples, a "why not a spreadsheet" comparison, a concentrated launch — ahead of further language work. | The positioning is [§1](visimark-design.md#1-purpose)'s own framing put more sharply — auditable in review, enforceable in CI — and drifts toward no non-goal. The browser playground is a real gap: the site's `eval` demos are prerendered, so a visitor cannot edit an input and watch a value go stale. Identifies the drift invoice as the strongest asset the project already has. | Fifteen proposals in one issue with no common verdict — approving it approves a launch plan, rejecting it rejects a wanted playground. Most of the bundle has no [§2](visimark-design.md#2-constraints-that-shaped-the-design) constraint to be judged against, so the register is the wrong instrument for it. Two premises had lapsed: marketplace publishing is already automated in `release.yml` and its failure already diagnosed in [`releasing.md`](releasing.md), and the landing page gained the Explore section in [#40](https://github.com/michal-niedzwiedzki/visimark/pull/40). Its prioritisation argument does not reopen charts ([#36](https://github.com/michal-niedzwiedzki/visimark/issues/36), merged) or `Σ` ([#43](https://github.com/michal-niedzwiedzki/visimark/issues/43)) — growth impact is not new information about the constraint that decided either. | [#45](https://github.com/michal-niedzwiedzki/visimark/issues/45) | [DEFERRED](https://github.com/michal-niedzwiedzki/visimark/issues/45#issuecomment-5588945953) |
 ---
 
@@ -251,6 +277,17 @@ the same time.
 
 | Name | Kind | Request | Landed | Released | Decision |
 |------|------|---------|--------|----------|----------|
+| Record the browser bundle's size as a checked ceiling | tooling | [#191](https://github.com/michal-niedzwiedzki/visimark/issues/191) | [#198](https://github.com/michal-niedzwiedzki/visimark/pull/198) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/191#issuecomment-5796346439) |
+| Cross-host equivalence check over the worked-example corpus | tooling | [#189](https://github.com/michal-niedzwiedzki/visimark/issues/189) | [#195](https://github.com/michal-niedzwiedzki/visimark/pull/195) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/189#issuecomment-5793796093) |
+| Prove the published package is importable, not just installable | tooling | [#190](https://github.com/michal-niedzwiedzki/visimark/issues/190) | [#196](https://github.com/michal-niedzwiedzki/visimark/pull/196) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/190#issuecomment-5794137088) |
+| Pin the markdownlint restoration contract, and report analyze() failures once | tooling | [#173](https://github.com/michal-niedzwiedzki/visimark/issues/173) | [#182](https://github.com/michal-niedzwiedzki/visimark/pull/182) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/173#issuecomment-5786173572) |
+| An MCP server exposing the engine to agents | tooling | [#169](https://github.com/michal-niedzwiedzki/visimark/issues/169) | [#183](https://github.com/michal-niedzwiedzki/visimark/pull/183) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/169#issuecomment-5786228235) |
+| Enforce the Node support policy (current LTS + latest stable, both blocking) | tooling | [#184](https://github.com/michal-niedzwiedzki/visimark/issues/184) | [#186](https://github.com/michal-niedzwiedzki/visimark/pull/186) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/184#issuecomment-5790907466) |
+| Bun/Node parity as an always-on rule | tooling | [#171](https://github.com/michal-niedzwiedzki/visimark/issues/171) | [#175](https://github.com/michal-niedzwiedzki/visimark/pull/175) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/171#issuecomment-5785197844) |
+| `fmt --no-artifacts` | tooling | [#168](https://github.com/michal-niedzwiedzki/visimark/issues/168) | [#178](https://github.com/michal-niedzwiedzki/visimark/pull/178) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/168#issuecomment-5785369119) |
+| `IRR(flows)` | reducer | [#158](https://github.com/michal-niedzwiedzki/visimark/issues/158) | [#167](https://github.com/michal-niedzwiedzki/visimark/pull/167) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/158#issuecomment-5783540649) |
+| `NPV(rate, flows)` | reducer | [#157](https://github.com/michal-niedzwiedzki/visimark/issues/157) | [#165](https://github.com/michal-niedzwiedzki/visimark/pull/165) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/157#issuecomment-5782258164) |
+| `PMT(rate, nper, pv)` | mapper | [#156](https://github.com/michal-niedzwiedzki/visimark/issues/156) | [#161](https://github.com/michal-niedzwiedzki/visimark/pull/161) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/156#issuecomment-5781382455) |
 | `EOMONTH(d, months)` | mapper | [#6](https://github.com/michal-niedzwiedzki/visimark/issues/6) | [#8](https://github.com/michal-niedzwiedzki/visimark/pull/8) | [v0.1.2](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.2) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/6#issuecomment-5559247913) |
 | `SQRT(x)` | mapper | [#18](https://github.com/michal-niedzwiedzki/visimark/issues/18) | [#20](https://github.com/michal-niedzwiedzki/visimark/pull/20) | [v0.1.2](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.2) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/18#issuecomment-5560992652) |
 | `assert` statements | language feature | [#27](https://github.com/michal-niedzwiedzki/visimark/issues/27) | [#32](https://github.com/michal-niedzwiedzki/visimark/pull/32) | [v0.1.2](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.2) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/27#issuecomment-5570701059) |
@@ -264,5 +301,14 @@ the same time.
 | Declared local data imports with integrity stamps | language feature | [#66](https://github.com/michal-niedzwiedzki/visimark/issues/66) | [#68](https://github.com/michal-niedzwiedzki/visimark/pull/68) | [v0.1.3](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.3) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/66#issuecomment-5626597963) |
 | `unlabelled` clause for headerless CSV imports | language feature | [#70](https://github.com/michal-niedzwiedzki/visimark/issues/70) | [#72](https://github.com/michal-niedzwiedzki/visimark/pull/72) | [v0.1.3](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.3) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/70#issuecomment-5637476576) |
 | Human-readable column references and aliases (quoted headers, `is`) | language feature | [#86](https://github.com/michal-niedzwiedzki/visimark/issues/86) | [#88](https://github.com/michal-niedzwiedzki/visimark/pull/88) | [v0.1.3](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.3) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/86#issuecomment-5668665880) |
+| Scenario parameters (`param`, `eval --scenario`) | language feature | [#119](https://github.com/michal-niedzwiedzki/visimark/issues/119) | [#123](https://github.com/michal-niedzwiedzki/visimark/pull/123) | [v0.1.6](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.6) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/119#issuecomment-5740581923) |
+| Refuse unrecognised and misplaced CLI options | tooling | [#121](https://github.com/michal-niedzwiedzki/visimark/issues/121) | [#135](https://github.com/michal-niedzwiedzki/visimark/pull/135) | [v0.1.7](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.7) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/121#issuecomment-5758855875) |
+| Division by zero is `TYPE` | language feature | [#122](https://github.com/michal-niedzwiedzki/visimark/issues/122) | [#126](https://github.com/michal-niedzwiedzki/visimark/pull/126) | [v0.1.6](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.6) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/122#issuecomment-5746529695) |
+| Prose notation for unary vocabulary (`\|x\|`, `⌊x⌋`, `⌈x⌉`, `√(x)`) | language feature | [#64](https://github.com/michal-niedzwiedzki/visimark/issues/64) | [#136](https://github.com/michal-niedzwiedzki/visimark/pull/136) | [v0.1.7](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.7) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/64#issuecomment-5759705769) |
+| Extension changelog entry for every release | tooling | [#131](https://github.com/michal-niedzwiedzki/visimark/issues/131) | [#138](https://github.com/michal-niedzwiedzki/visimark/pull/138) | [v0.1.7](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.7) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/131#issuecomment-5760479248) |
+| Presentation-only `%` display sigil on prose anchors | language feature | [#140](https://github.com/michal-niedzwiedzki/visimark/issues/140) | [#144](https://github.com/michal-niedzwiedzki/visimark/pull/144) | [v0.1.7](https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.7) | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/140#issuecomment-5775547789) |
+| A pre-commit hook for the pre-commit framework | tooling | [#149](https://github.com/michal-niedzwiedzki/visimark/issues/149) | [#151](https://github.com/michal-niedzwiedzki/visimark/pull/151) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/149#issuecomment-5780522480) |
+| A `remark`/`unified` plugin wrapping `visimark check` (`remark-lint-visimark`) | tooling | [#152](https://github.com/michal-niedzwiedzki/visimark/issues/152) | [#159](https://github.com/michal-niedzwiedzki/visimark/pull/159) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/152#issuecomment-5781287493) |
+| A `markdownlint` custom rule wrapping `visimark check` (`markdownlint-rule-visimark`) | tooling | [#153](https://github.com/michal-niedzwiedzki/visimark/issues/153) | [#164](https://github.com/michal-niedzwiedzki/visimark/pull/164) | — | [APPROVED](https://github.com/michal-niedzwiedzki/visimark/issues/153#issuecomment-5782250622) |
 
 <!--vmark:no-formulas-->

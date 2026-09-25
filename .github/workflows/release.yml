@@ -40,7 +40,10 @@ jobs:
           bun-version: latest
       - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          # Node is a tool here, not the thing under test — npm does the
+          # publishing. It still tracks the LTS rather than a number, so this
+          # file cannot drift onto an EOL runtime while ci.yml moves on.
+          node-version: "lts/*"
           registry-url: https://registry.npmjs.org
 
       - run: bun install --frozen-lockfile
@@ -115,6 +118,82 @@ jobs:
           else
             npm publish --provenance --access public
           fi
+
+      - name: Publish the remark plugin to npm
+        id: remark-plugin
+        continue-on-error: true
+        working-directory: packages/remark-visimark
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "remark-lint-visimark@$ENGINE_VERSION" version >/dev/null 2>&1; then
+            echo "remark-lint-visimark@$ENGINE_VERSION is already on npm; skipping."
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: Publish the markdownlint rule to npm
+        id: markdownlint-rule
+        continue-on-error: true
+        working-directory: packages/markdownlint-visimark
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "markdownlint-rule-visimark@$ENGINE_VERSION" version >/dev/null 2>&1; then
+            echo "markdownlint-rule-visimark@$ENGINE_VERSION is already on npm; skipping."
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: Publish the MCP server to npm
+        id: mcp-server
+        continue-on-error: true
+        working-directory: packages/visimark-mcp
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "visimark-mcp@$ENGINE_VERSION" version >/dev/null 2>&1; then
+            echo "visimark-mcp@$ENGINE_VERSION is already on npm; skipping."
+          else
+            npm publish --provenance --access public
+          fi
+
+      # The official MCP registry is how an agent discovers this server at all;
+      # npm is only where the bytes live. The namespace is proven by GitHub
+      # login and is independent of the `visimark_` tool-name prefix, so a
+      # later move to a domain-verified namespace changes this entry and not a
+      # single tool name.
+      - name: Publish to the MCP registry
+        id: mcp-registry
+        continue-on-error: true
+        # Only after the bytes are on npm: the registry entry points at an npm
+        # package, and an entry for a version npm does not have is a listing
+        # that fails for every agent that follows it.
+        if: steps.mcp-server.outcome == 'success'
+        run: |
+          set -e
+          if curl -sS "https://registry.modelcontextprotocol.io/v0/servers?search=visimark" \
+            | grep -q "\"version\"[[:space:]]*:[[:space:]]*\"$ENGINE_VERSION\""; then
+            echo "the MCP registry already has visimark $ENGINE_VERSION; skipping."
+            exit 0
+          fi
+          # server.json's two version fields are rewritten from the tag rather
+          # than trusted: the committed value documents the shape, and a stale
+          # one would publish a registry entry pointing at a version that is
+          # not what just went to npm. It is not in ci.yml's version-agreement
+          # check because it is not a package manifest.
+          bun -e '
+            const fs = require("fs");
+            const doc = JSON.parse(fs.readFileSync("server.json", "utf8"));
+            doc.version = process.env.ENGINE_VERSION;
+            for (const pkg of doc.packages) pkg.version = process.env.ENGINE_VERSION;
+            fs.writeFileSync("server.json", JSON.stringify(doc, null, 2) + "\n");
+          '
+          curl -sSL -o /tmp/mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/').tar.gz"
+          tar -xzf /tmp/mcp-publisher.tar.gz -C /tmp mcp-publisher
+          /tmp/mcp-publisher login github-oidc
+          /tmp/mcp-publisher publish
 
       - name: Package the extension
         id: package
@@ -239,16 +318,22 @@ jobs:
       # First, any leg that recorded a failure above fails the job here — that
       # is what buys the legs the right to continue past each other, and it is
       # why `continue-on-error` is not a softening. Second, ask all three
-      # registries whether the versions are actually there: the same "ask the
-      # registry, don't trust the exit code" discipline each leg uses, applied
-      # once at the end as an assertion rather than a branch, so a leg that
-      # exits 0 without publishing cannot pass for done.
+      # registries whether the versions are actually there — npm once per
+      # published package, since a gate that asks only about the engine lets a
+      # silently-empty plugin publish pass: the same "ask the registry, don't
+      # trust the exit code" discipline each leg uses, applied once at the end
+      # as an assertion rather than a branch, so a leg that exits 0 without
+      # publishing cannot pass for done.
       #
       # No `set -e`: every check below is explicitly tested and accumulated into
-      # `fail`, so one missing registry still reports the other two.
+      # `fail`, so one missing package or registry still reports the others.
       - name: every leg must have landed
         env:
           NPM_OUTCOME: ${{ steps.npm.outcome }}
+          REMARK_PLUGIN_OUTCOME: ${{ steps.remark-plugin.outcome }}
+          MARKDOWNLINT_RULE_OUTCOME: ${{ steps.markdownlint-rule.outcome }}
+          MCP_SERVER_OUTCOME: ${{ steps.mcp-server.outcome }}
+          MCP_REGISTRY_OUTCOME: ${{ steps.mcp-registry.outcome }}
           PACKAGE_OUTCOME: ${{ steps.package.outcome }}
           MARKETPLACE_OUTCOME: ${{ steps.marketplace.outcome }}
           OVSX_OUTCOME: ${{ steps.ovsx.outcome }}
@@ -263,6 +348,10 @@ jobs:
           # steps skip on a dispatch with no tag, which is documented behaviour.
           for pair in \
             "Publish the engine to npm=$NPM_OUTCOME" \
+            "Publish the remark plugin to npm=$REMARK_PLUGIN_OUTCOME" \
+            "Publish the markdownlint rule to npm=$MARKDOWNLINT_RULE_OUTCOME" \
+            "Publish the MCP server to npm=$MCP_SERVER_OUTCOME" \
+            "Publish to the MCP registry=$MCP_REGISTRY_OUTCOME" \
             "Package the extension=$PACKAGE_OUTCOME" \
             "Publish to the VS Code Marketplace=$MARKETPLACE_OUTCOME" \
             "Publish to Open VSX=$OVSX_OUTCOME" \
@@ -275,13 +364,34 @@ jobs:
             fi
           done
 
-          # Registries can lag a few seconds behind a publish they have already
-          # accepted, so each check gets a handful of attempts. This is a last
-          # line of defence, not a poll: still absent after this and the release
-          # really is incomplete.
-          retry() { for _ in 1 2 3 4 5; do if "$@"; then return 0; fi; sleep 15; done; return 1; }
+          # Registries can lag behind a publish they have already accepted —
+          # npm has settled in low tens of seconds, the Marketplace slower —
+          # so each check is retried with backoff over roughly ten minutes
+          # before it is trusted. This is a last line of defence, not a poll:
+          # still absent after ~10 minutes and the release really is
+          # incomplete. The original 5 x 15s (75s ceiling) read a leg that was
+          # still settling as one that had failed, twice in two runs.
+          retry() {
+            local delays=(15 15 30 30 60 60 60 90 90 90) # ~540s of backoff across 10 attempts
+            if "$@"; then return 0; fi
+            local attempt=1 d
+            for d in "${delays[@]}"; do
+              attempt=$((attempt + 1))
+              echo "::warning::attempt $attempt still doesn't see it — could be a slow registry, not a failure; retrying in ${d}s..." >&2
+              sleep "$d"
+              if "$@"; then return 0; fi
+            done
+            return 1
+          }
 
           on_npm() { npm view "visimark@$ENGINE_VERSION" version >/dev/null 2>&1; }
+          on_npm_remark() { npm view "remark-lint-visimark@$ENGINE_VERSION" version >/dev/null 2>&1; }
+          on_npm_markdownlint() { npm view "markdownlint-rule-visimark@$ENGINE_VERSION" version >/dev/null 2>&1; }
+          on_npm_mcp() { npm view "visimark-mcp@$ENGINE_VERSION" version >/dev/null 2>&1; }
+          on_mcp_registry() {
+            curl -sS "https://registry.modelcontextprotocol.io/v0/servers?search=visimark" \
+              | grep -q "\"version\"[[:space:]]*:[[:space:]]*\"$ENGINE_VERSION\""
+          }
           on_marketplace() {
             bunx @vscode/vsce show "$EXT_NS.$EXT_NAME" --json >/tmp/verify-marketplace.json 2>/dev/null || return 1
             node -e 'const fs=require("fs"); let d; try { d = JSON.parse(fs.readFileSync("/tmp/verify-marketplace.json","utf8")) } catch { process.exit(1) } process.exit((d.versions||[]).some(v => v.version === process.env.EXT_VERSION) ? 0 : 1)'
@@ -291,21 +401,49 @@ jobs:
           if retry on_npm; then
             echo "npm has visimark@$ENGINE_VERSION."
           else
-            echo "::error::npm does not have visimark@$ENGINE_VERSION. The release is incomplete — fix the npm leg and re-run this workflow; do not publish by hand (see docs/releasing.md)."
+            echo "::error::npm still does not have visimark@$ENGINE_VERSION after ~10 minutes of retries — this is absence, not lag. Fix the npm leg and re-run this workflow; do not publish by hand (see docs/releasing.md)."
+            fail=1
+          fi
+
+          if retry on_npm_remark; then
+            echo "npm has remark-lint-visimark@$ENGINE_VERSION."
+          else
+            echo "::error::npm still does not have remark-lint-visimark@$ENGINE_VERSION after ~10 minutes of retries — this is absence, not lag. Fix the remark plugin leg and re-run this workflow; do not publish by hand (see docs/releasing.md)."
+            fail=1
+          fi
+
+          if retry on_npm_markdownlint; then
+            echo "npm has markdownlint-rule-visimark@$ENGINE_VERSION."
+          else
+            echo "::error::npm still does not have markdownlint-rule-visimark@$ENGINE_VERSION after ~10 minutes of retries — this is absence, not lag. Fix the markdownlint rule leg and re-run this workflow; do not publish by hand (see docs/releasing.md)."
+            fail=1
+          fi
+
+          if retry on_npm_mcp; then
+            echo "npm has visimark-mcp@$ENGINE_VERSION."
+          else
+            echo "::error::npm still does not have visimark-mcp@$ENGINE_VERSION after ~10 minutes of retries — this is absence, not lag. Fix the MCP server leg and re-run this workflow; do not publish by hand (see docs/releasing.md)."
+            fail=1
+          fi
+
+          if retry on_mcp_registry; then
+            echo "The MCP registry has visimark $ENGINE_VERSION."
+          else
+            echo "::error::the MCP registry still does not list visimark $ENGINE_VERSION after ~10 minutes of retries — this is absence, not lag. An agent that cannot discover the server has no other route to it. Fix the registry leg and re-run this workflow (see docs/releasing.md)."
             fail=1
           fi
 
           if retry on_marketplace; then
             echo "The Marketplace has $EXT_NS.$EXT_NAME@$EXT_VERSION."
           else
-            echo "::error::the VS Code Marketplace does not list $EXT_NS.$EXT_NAME@$EXT_VERSION. A first publish for a publisher can sit in verification for a while — check the publisher hub before assuming a credential problem — then fix the cause and re-run this workflow. Fix this check rather than deleting it: it is the only thing that noticed v0.1.3 was half-published."
+            echo "::error::the VS Code Marketplace still does not list $EXT_NS.$EXT_NAME@$EXT_VERSION after ~10 minutes of retries — this is absence, not lag. A first publish for a publisher can sit in verification for a while — check the publisher hub before assuming a credential problem — then fix the cause and re-run this workflow. Fix this check rather than deleting it: it is the only thing that noticed v0.1.3 was half-published."
             fail=1
           fi
 
           if retry on_ovsx; then
             echo "Open VSX has $EXT_NS.$EXT_NAME@$EXT_VERSION."
           else
-            echo "::error::Open VSX does not have $EXT_NS.$EXT_NAME@$EXT_VERSION. The release is incomplete — fix the Open VSX leg and re-run this workflow (see docs/releasing.md)."
+            echo "::error::Open VSX still does not have $EXT_NS.$EXT_NAME@$EXT_VERSION after ~10 minutes of retries — this is absence, not lag. Fix the Open VSX leg and re-run this workflow (see docs/releasing.md)."
             fail=1
           fi
 

@@ -252,7 +252,7 @@ flowchart LR
 | `visimark infer FILE...` | Works out which rules reproduce the numbers a document already has, and proposes them | `--write` inserts what it proposed | nothing, unless `--write` — and then it only ever inserts | `0` whatever it finds, because it is advisory · `2` bad usage or unreadable file |
 | `visimark eval FILE` | Prints the computed values — all of them, or one by name | `--get NAME`, `--json` | nothing | `0` · `2` bad usage, unreadable file, or no such name |
 | `visimark explain FILE` | Prints each sheet's inputs, rules and evaluation order | `#sheet` limits it to one sheet | nothing | `0` · `2` bad usage, unreadable file, or no such sheet |
-| `visimark ref [NAME]` | Prints what a builtin function does — signature, parameters, errors, worked examples — or lists all thirteen | `--json` | nothing | `0` · `2` no such function |
+| `visimark ref [NAME]` | Prints what a builtin function does — signature, parameters, errors, worked examples — or lists all sixteen | `--json` | nothing | `0` · `2` no such function |
 
 Every option, every exit code and every finding `check` can report is
 tabulated in [`docs/cli-reference.md`](docs/cli-reference.md).
@@ -323,6 +323,31 @@ glob is the whole setup. Any document under that glob with a table and no rules
 is a failure, which is why the `<!--vmark:no-formulas-->` marker above belongs
 in the file rather than in this workflow — the decision is about a document,
 not about a CI run.
+
+A project already on `remark`/`remark-lint` adds the same checks with
+[`remark-lint-visimark`](https://www.npmjs.com/package/remark-lint-visimark)
+instead — see [`docs/ci.md` chapter 24](docs/ci.md#24-the-remarkunified-plugin).
+
+A project on [`markdownlint`](https://github.com/DavidAnson/markdownlint) adds
+them with
+[`markdownlint-rule-visimark`](https://www.npmjs.com/package/markdownlint-rule-visimark)
+— see [`docs/ci.md` chapter 25](docs/ci.md#25-the-markdownlint-custom-rule).
+
+An agent reaches the same engine over
+[MCP](https://modelcontextprotocol.io) with
+[`visimark-mcp`](https://www.npmjs.com/package/visimark-mcp), which serves
+every command as a tool, the authoring discipline as resources, and writes
+nothing unless an operator opens the write gate:
+
+```bash
+npm i -g visimark-mcp   # or: bun add -g visimark-mcp
+npx visimark-mcp        # or: bunx visimark-mcp
+claude mcp add visimark -- npx -y visimark-mcp
+```
+
+The full surface is [`docs/mcp.md`](docs/mcp.md), and chapter 29 of
+[`docs/ci.md`](docs/ci.md#29-the-mcp-server) covers running it beside a CI
+check.
 
 ## Diffable by construction
 
@@ -443,6 +468,13 @@ checker starts complaining before believing a document is wired up. The
 `COVERAGE` finding described above exists so that an agent cannot report a
 green build on a document with no build in it, but the habit is still the
 better safeguard.
+
+There is also an MCP server, [`visimark-mcp`](docs/mcp.md), for an agent
+working in a repository it has never seen: `npx visimark-mcp` or
+`bunx visimark-mcp`, or `claude mcp add visimark -- npx -y visimark-mcp`. It
+serves the skill above as a resource, so the discipline arrives with the
+verifier rather than separately. It is read-only unless started with
+`--allow-write` **and** given a host-declared root.
 
 Editor support is specified in
 [`docs/visimark-editor-plugins-design.md`](docs/visimark-editor-plugins-design.md):

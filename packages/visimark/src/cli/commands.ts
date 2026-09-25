@@ -12,12 +12,7 @@ import { planInfer } from "../infer/write.js";
 import { formatCheck } from "../report/format.js";
 import { explainJson, explainText, explainView } from "../report/explain.js";
 import { formatInfer } from "../report/infer.js";
-import {
-  describeFunction,
-  functionNames,
-  precisionPhrase,
-  type FnEntry,
-} from "../lang/reference.js";
+import { describeFunction, functionNames, precisionPhrase } from "../lang/reference.js";
 import { closest } from "../report/levenshtein.js";
 import {
   emitJson,
@@ -28,42 +23,35 @@ import {
   publicAssertions,
   publicCharts,
   publicFinding,
+  publicFnEntry,
   publicProposal,
+  signature,
   statusFromExit,
+  type CommandName,
+  type OnDefaults,
 } from "../report/json.js";
+import {
+  applyScenario,
+  listParams,
+  parseScenarioJson,
+  resolveScenario,
+  ScenarioError,
+  type ParamInfo,
+} from "../eval/scenario.js";
+import { parseArgs, usageLine, type Refusal } from "./args.js";
 import { readVersion } from "./version.js";
 import { fmt } from "../write/fmt.js";
 import { applyEdits } from "../write/splice.js";
 
-interface Parsed {
-  files: string[];
-  flags: Set<string>;
-  options: Map<string, string>;
-  sheets: string[]; // #sheet arguments
-}
-
-function parseArgs(args: string[]): Parsed {
-  const files: string[] = [];
-  const flags = new Set<string>();
-  const options = new Map<string, string>();
-  const sheets: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i]!;
-    if (a === "--get") {
-      options.set("get", args[++i] ?? "");
-    } else if (a.startsWith("--")) {
-      flags.add(a.slice(2));
-    } else if (a.startsWith("#")) {
-      sheets.push(a.slice(1));
-    } else {
-      files.push(a);
-    }
-  }
-  return { files, flags, options, sheets };
-}
-
 function read(path: string): string {
   return readFileSync(path, "utf8");
+}
+
+function refuse(command: CommandName, r: Refusal, out: Writer, err: Writer): 2 {
+  err(r.message);
+  if (r.usage) err(r.usage);
+  if (r.json) emitJson(out, errorEnvelope(command, "USAGE", r.message));
+  return 2;
 }
 
 function showValue(v: Value): string {
@@ -74,10 +62,13 @@ function showValue(v: Value): string {
 }
 
 export function cmdCheck(args: string[], out: Writer, err: Writer): number {
-  const { files, flags } = parseArgs(args);
+  const p = parseArgs("check", args);
+  if (!p.ok) return refuse("check", p, out, err);
+  const parsed = p.parsed;
+  const { files, flags } = parsed;
   const json = flags.has("json");
   if (files.length === 0) {
-    const msg = "usage: visimark check FILE...";
+    const msg = usageLine("check");
     err(msg);
     if (json) emitJson(out, errorEnvelope("check", "USAGE", msg));
     return 2;
@@ -126,15 +117,19 @@ export function cmdCheck(args: string[], out: Writer, err: Writer): number {
 }
 
 export function cmdFmt(args: string[], out: Writer, err: Writer): number {
-  const { files, flags } = parseArgs(args);
+  const p = parseArgs("fmt", args);
+  if (!p.ok) return refuse("fmt", p, out, err);
+  const parsed = p.parsed;
+  const { files, flags } = parsed;
   const json = flags.has("json");
   if (files.length === 0) {
-    const msg = "usage: visimark fmt FILE... [--fix-dates]";
+    const msg = usageLine("fmt");
     err(msg);
     if (json) emitJson(out, errorEnvelope("fmt", "USAGE", msg));
     return 2;
   }
   const fixDates = flags.has("fix-dates");
+  const noArtifacts = flags.has("no-artifacts");
   const fileEntries: object[] = [];
   let exit: 0 | 1 | 2 = 0;
   let filesChanged = 0;
@@ -142,6 +137,7 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
   let anchorsUpdated = 0;
   let datesFixed = 0;
   let artifactCount = 0;
+  let artifactsSkipped = 0;
   let problems = 0;
   let stale = 0;
   let errors = 0;
@@ -156,7 +152,7 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
       exit = 2;
       continue;
     }
-    const r = fmt(source, { fixDates, doc: onDisk(path) });
+    const r = fmt(source, { fixDates, noArtifacts, doc: onDisk(path) });
     // a generated artifact is written whole; the document itself is spliced.
     // `mkdirSync` still resolves a path - it has to, since the artifact's
     // directory may not exist yet - but nothing is decided by it: the open
@@ -177,6 +173,13 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
       continue;
     }
     if (r.changed) writeFileSync(path, r.output);
+    // `--no-artifacts` declined a write the caller can still see the cost of:
+    // the count is named so a run that touched nothing is distinguishable from
+    // one that left five charts alone. It never implies the charts are fine —
+    // `check` still reports every one of them.
+    const skippedBit = r.artifactsSkipped
+      ? `${r.artifactsSkipped} artifact${r.artifactsSkipped === 1 ? "" : "s"} skipped`
+      : "";
     if (!json) {
       if (r.changed || r.artifacts.length > 0) {
         const bits = [
@@ -186,8 +189,11 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
           r.artifacts.length
             ? `${r.artifacts.length} artifact${r.artifacts.length === 1 ? "" : "s"}`
             : "",
+          skippedBit,
         ].filter(Boolean);
         out(`${path}: updated ${bits.join(", ")}`);
+      } else if (skippedBit) {
+        out(`${path}: unchanged, ${skippedBit}`);
       } else {
         out(`${path}: unchanged`);
       }
@@ -204,6 +210,7 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
         anchorsUpdated: r.anchorsUpdated,
         datesFixed: r.datesFixed,
         artifacts: r.artifacts.map((a) => ({ path: a.path })),
+        artifactsSkipped: r.artifactsSkipped,
         findings: r.unfixable.map((f) => publicFinding(path, f)),
       });
       if (r.changed) filesChanged++;
@@ -211,6 +218,7 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
       anchorsUpdated += r.anchorsUpdated;
       datesFixed += r.datesFixed;
       artifactCount += r.artifacts.length;
+      artifactsSkipped += r.artifactsSkipped;
       problems += summary.problems;
       stale += summary.stale;
       errors += summary.errors;
@@ -230,6 +238,7 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
         anchorsUpdated,
         datesFixed,
         artifacts: artifactCount,
+        artifactsSkipped,
         problems,
         stale,
         errors,
@@ -245,11 +254,14 @@ export function cmdFmt(args: string[], out: Writer, err: Writer): number {
  * failure, it is a document, and all CI pressure stays in `check`.
  */
 export function cmdInfer(args: string[], out: Writer, err: Writer): number {
-  const { files, flags } = parseArgs(args);
+  const p = parseArgs("infer", args);
+  if (!p.ok) return refuse("infer", p, out, err);
+  const parsed = p.parsed;
+  const { files, flags } = parsed;
   const json = flags.has("json");
   const write = flags.has("write");
   if (files.length === 0) {
-    const msg = "usage: visimark infer FILE... [--write]";
+    const msg = usageLine("infer");
     err(msg);
     if (json) emitJson(out, errorEnvelope("infer", "USAGE", msg));
     return 2;
@@ -323,11 +335,13 @@ export function cmdInfer(args: string[], out: Writer, err: Writer): number {
 }
 
 export function cmdEval(args: string[], out: Writer, err: Writer): number {
-  const { files, flags, options } = parseArgs(args);
+  const p = parseArgs("eval", args);
+  if (!p.ok) return refuse("eval", p, out, err);
+  const { files, flags, options } = p.parsed;
   const json = flags.has("json");
   const path = files[0];
   if (!path) {
-    const msg = "usage: visimark eval FILE [--get NAME] [--json]";
+    const msg = usageLine("eval");
     err(msg);
     if (json) emitJson(out, errorEnvelope("eval", "USAGE", msg));
     return 2;
@@ -342,6 +356,32 @@ export function cmdEval(args: string[], out: Writer, err: Writer): number {
     return 2;
   }
   const model = build(locate(source));
+
+  // A scenario is checked in full before anything is evaluated: a fault is a
+  // usage error, and no values are printed (scenario-params-spec.md §4.2).
+  const scenarioFile = options.get("scenario");
+  let scenario: { file: string; params: ParamInfo[]; supplied: Set<string> } | null = null;
+  if (scenarioFile !== undefined) {
+    try {
+      let text: string;
+      try {
+        text = scenarioFile === "-" ? readFileSync(0, "utf8") : read(scenarioFile);
+      } catch {
+        throw new ScenarioError(`visimark: cannot read scenario ${scenarioFile}`);
+      }
+      const resolved = resolveScenario(model, parseScenarioJson(text, scenarioFile));
+      // listed before the values change, so each carries its default
+      const params = listParams(model);
+      applyScenario(model, resolved);
+      scenario = { file: scenarioFile, params, supplied: new Set(resolved.keys()) };
+    } catch (e) {
+      if (!(e instanceof ScenarioError)) throw e;
+      err(e.message);
+      if (json) emitJson(out, errorEnvelope("eval", "SCENARIO", e.message));
+      return 2;
+    }
+  }
+
   const result = check(model);
 
   const all = new Map<string, string>();
@@ -351,16 +391,44 @@ export function cmdEval(args: string[], out: Writer, err: Writer): number {
   }
   const values = evalValues(result);
 
+  // Under a scenario, each failed assertion also says how it fares on the
+  // defaults — "these assumptions break it" vs "it was already broken". That
+  // takes a second evaluation, of a fresh model, since `eval` does not assume
+  // `check` passed. Assertions come back in document order from both.
+  let onDefaults: (OnDefaults | undefined)[] | undefined;
+  if (scenario && result.assertions.some((a) => a.holds === false)) {
+    const base = check(build(locate(source)));
+    onDefaults = result.assertions.map((a, i) => {
+      if (a.holds !== false) return undefined;
+      const d = base.assertions[i]?.holds;
+      return d === true ? "pass" : d === false ? "fail" : "unverified";
+    });
+  }
+
   // A false assertion means the document's stated invariants do not hold; `eval`
   // will not hand back values as if it were sound. It prints the failure to
   // stderr and exits 1 — after the requested value, so a pipeline still gets it.
-  const failed = result.assertions.filter((a) => a.holds === false);
+  const failed = result.assertions
+    .map((a, i) => ({ a, onDefault: onDefaults?.[i] }))
+    .filter(({ a }) => a.holds === false);
   const assertExit: 0 | 1 = failed.length > 0 ? 1 : 0;
   const reportFailures = (): void => {
-    for (const a of failed) {
+    for (const { a, onDefault } of failed) {
       err(`  ASSERT  #${a.sheetId}   ${a.source.replace(/^assert\s+/, "")}`);
-      err(`          ${a.substituted}   is false`);
+      err(`          ${a.substituted}   is false${onDefault ? ON_DEFAULTS_TEXT[onDefault] : ""}`);
     }
+  };
+
+  const scenarioJson = (): object => {
+    const params: Record<string, object> = {};
+    for (const p of scenario!.params) {
+      params[p.id] = {
+        value: typeof values[p.id] === "string" ? values[p.id] : null,
+        default: p.defaultValue,
+        source: scenario!.supplied.has(p.id) ? "scenario" : "default",
+      };
+    }
+    return { file: scenario!.file, params };
   };
 
   const emitEval = (selected: typeof values): void => {
@@ -369,9 +437,10 @@ export function cmdEval(args: string[], out: Writer, err: Writer): number {
       visimark: readVersion(),
       status: statusFromExit(assertExit),
       file: path,
+      ...(scenario ? { scenario: scenarioJson() } : {}),
       values: selected,
-      assertions: publicAssertions(result.assertions),
-      charts: publicCharts(result.charts),
+      assertions: publicAssertions(result.assertions, onDefaults),
+      charts: publicCharts(result.charts, scenario === null),
     });
   };
 
@@ -396,9 +465,37 @@ export function cmdEval(args: string[], out: Writer, err: Writer): number {
   else {
     const width = Math.max(...[...all.keys()].map((k) => k.length), 0);
     for (const [k, v] of all) out(`${k.padEnd(width)}  ${v}`);
+    if (scenario) for (const line of scenarioText(scenario, all)) out(line);
     reportFailures();
   }
   return assertExit;
+}
+
+const ON_DEFAULTS_TEXT: Record<OnDefaults, string> = {
+  pass: " under scenario (holds on defaults)",
+  fail: " under scenario (also false on defaults)",
+  unverified: " under scenario (unverified on defaults)",
+};
+
+/** the `scenario:` block that follows the value lines (spec §5.3) */
+function scenarioText(
+  scenario: { file: string; params: ParamInfo[]; supplied: Set<string> },
+  all: Map<string, string>,
+): string[] {
+  const rows = scenario.params.map((p) => ({
+    id: p.id,
+    value: all.get(p.id) ?? "?",
+    supplied: scenario.supplied.has(p.id),
+    dflt: p.defaultValue,
+  }));
+  const idW = Math.max(0, ...rows.map((r) => r.id.length));
+  const valW = Math.max(0, ...rows.map((r) => r.value.length));
+  const lines = [`scenario: ${scenario.file}`];
+  for (const r of rows) {
+    const head = `  ${r.id.padEnd(idW)}  ${r.value.padEnd(valW)}  `;
+    lines.push(r.supplied ? `${head}scenario  (default ${r.dflt})` : `${head}default`);
+  }
+  return lines;
 }
 
 function bareToQualified(model: DocModel, name: string): string {
@@ -411,11 +508,14 @@ function bareToQualified(model: DocModel, name: string): string {
 }
 
 export function cmdExplain(args: string[], out: Writer, err: Writer): number {
-  const { files, flags, sheets } = parseArgs(args);
+  const p = parseArgs("explain", args);
+  if (!p.ok) return refuse("explain", p, out, err);
+  const parsed = p.parsed;
+  const { files, flags, sheets } = parsed;
   const json = flags.has("json");
   const path = files[0];
   if (!path) {
-    const msg = "usage: visimark explain FILE [#sheet]";
+    const msg = usageLine("explain");
     err(msg);
     if (json) emitJson(out, errorEnvelope("explain", "USAGE", msg));
     return 2;
@@ -461,7 +561,10 @@ export type Writer = (line: string) => void;
  * not about a document. Its whole body is formatting over `describeFunction`.
  */
 export function cmdRef(args: string[], out: Writer, err: Writer): number {
-  const { files, flags } = parseArgs(args);
+  const p = parseArgs("ref", args);
+  if (!p.ok) return refuse("ref", p, out, err);
+  const parsed = p.parsed;
+  const { files, flags } = parsed;
   const json = flags.has("json");
   const name = files[0];
 
@@ -528,10 +631,6 @@ export function cmdRef(args: string[], out: Writer, err: Writer): number {
   return 0;
 }
 
-function signature(e: FnEntry): string {
-  return `${e.name}(${e.params.map((p) => p.name).join(", ")})`;
-}
-
 /** A summary is written lower-case for the design-doc table; here it opens a line. */
 function sentence(s: string): string {
   return s.length > 0 ? `${s[0]!.toUpperCase()}${s.slice(1)}` : s;
@@ -539,21 +638,4 @@ function sentence(s: string): string {
 
 function plural(n: number): string {
   return `${n} argument${n === 1 ? "" : "s"}`;
-}
-
-function publicFnEntry(e: FnEntry): object {
-  return {
-    name: e.name,
-    kind: e.kind,
-    arity: e.arity,
-    signature: signature(e),
-    summary: e.summary,
-    params: e.params.map((p) => ({ name: p.name, type: p.type, note: p.note })),
-    returns: e.returns,
-    precision: { ...e.precision, text: precisionPhrase(e.precision) },
-    ...(e.rounding ? { rounding: e.rounding } : {}),
-    errors: e.errors.map((x) => ({ when: x.when, code: x.code })),
-    examples: e.examples.map((x) => ({ expr: x.expr, is: x.is })),
-    ...(e.see ? { see: [...e.see] } : {}),
-  };
 }

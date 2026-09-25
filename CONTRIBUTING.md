@@ -10,7 +10,7 @@ work.
 
 ## The design is deliberately small
 
-VisiMark ships **thirteen functions and a fixed operator set**. That is not a
+VisiMark ships **sixteen functions and a fixed operator set**. That is not a
 gap waiting to be filled. A document's numbers must depend on its own text and
 the version of VisiMark reading it, and on nothing else — no locale, no clock,
 no network, no config file, no plugins — because a number you cannot recompute
@@ -29,10 +29,12 @@ in it, approved, deferred or rejected, with the reasoning attached.
 | What you want to change | Route |
 |---|---|
 | A new function, operator or aggregate | Open a [vocabulary request](https://github.com/michal-niedzwiedzki/visimark/issues/new?template=vocabulary-request.yml) first. One primitive per issue. |
-| Syntax, semantics, the file format, or CLI behaviour | Open a free-form issue first, with a concrete proposal and a motivating document. |
+| Syntax, semantics, the file format, write-back — anything that changes what a **document means** | Open a [language feature](https://github.com/michal-niedzwiedzki/visimark/issues/new?template=language-feature.yml) issue first, with a concrete proposal and a motivating document. |
+| CLI options, exit codes, output formats — anything a **machine** downstream sees | Open a [tooling, CLI or process](https://github.com/michal-niedzwiedzki/visimark/issues/new?template=tooling-change.yml) issue, with the before and after sessions, exit codes included. |
 | A bug — the tool does something it does not claim to do | Pull request, straight away. An issue is welcome but not required. |
-| Documentation: a typo, a wrong statement, a missing explanation | Pull request, straight away. |
-| Editor support, the playground, CI, tooling | Issue first if it changes behaviour; pull request straight away if it is a fix. |
+| Documentation: a typo, a wrong statement, a missing explanation | Pull request, straight away. A larger change to the site, the playground, the tutorial or the examples goes on the [site, playground or docs](https://github.com/michal-niedzwiedzki/visimark/issues/new?template=site-docs.yml) form. |
+| Editor support, the playground, CI, releasing, the repo's own machinery | Issue first if it changes behaviour — the [tooling, CLI or process](https://github.com/michal-niedzwiedzki/visimark/issues/new?template=tooling-change.yml) form; pull request straight away if it is a fix. |
+| Positioning, prioritisation, an audience or an integration to chase | The [project direction](https://github.com/michal-niedzwiedzki/visimark/issues/new?template=direction.yml) form. It gets a comment, never a catalogue row. |
 
 The journey from an issue to a decision is
 [`docs/issue-runbook.md`](docs/issue-runbook.md). The short version: the
@@ -87,7 +89,52 @@ $ bunx visimark check docs/example-invoice.md
 ```
 
 Node is not needed to develop, but the published CLI must run under it, so CI
-exercises that separately. VisiMark supports Node 18 and newer.
+exercises that separately. If you do want it locally, `.nvmrc` holds `lts/*`
+rather than a number, so `nvm use` (or `nvm install`) lands on the same LTS CI
+tests and keeps doing so after the next LTS promotion:
+
+```console
+$ nvm use          # reads .nvmrc -> the current LTS
+```
+
+**VisiMark supports the current Node LTS and newer**, and CI runs the
+Node-facing jobs on the current LTS *and* on the
+latest stable release — both blocking, so a break on a new Node is caught here
+rather than by a user. The policy and how it is enforced are in
+[`.agents/rules/runtime-parity.md`](.agents/rules/runtime-parity.md); the
+`engines.node` floor in every published manifest is asserted against the live
+LTS by `ci.yml`'s `node-support-policy` job, so it cannot quietly rot.
+
+### Running the MCP server from your working tree
+
+```console
+$ bun run packages/visimark-mcp/src/main.ts              # read-only
+$ bun run packages/visimark-mcp/src/main.ts --allow-write
+```
+
+To point a client at the tree rather than at the release:
+
+```console
+$ claude mcp add visimark-dev -- bun run "$(pwd)/packages/visimark-mcp/src/main.ts"
+```
+
+**`bunx visimark-mcp` runs the published build, silently.** So does `npx
+visimark-mcp`. Neither will tell you your change is not in it; you will simply
+be testing the last release. The same trap applies to the CLI — see
+`bun packages/visimark/src/cli/main.ts` above.
+
+`bun run gen:mcp` regenerates the files the server ships as resources: the
+skill variant at `packages/visimark-mcp/skill.md` and the doc copies under
+`packages/visimark-mcp/docs/`. CI regenerates both and fails on a diff, so run
+it and commit the result whenever you touch `skills/visimark/SKILL.md` or one
+of the docs it serves.
+
+This repository dogfoods its own [pre-commit](https://pre-commit.com) hook
+(`.pre-commit-config.yaml`) — run `pre-commit install` once, after `pip install
+pre-commit`, to have `git commit` run `visimark check` over this repo's own
+tracked documents locally. It is a convenience, the way `bun run
+vscode-install` is a from-a-clone step rather than a requirement: `dogfood.yml`
+enforces the same check in CI either way.
 
 ## The commands
 
@@ -100,6 +147,7 @@ exercises that separately. VisiMark supports Node 18 and newer.
 | `bun run format:check` | `oxfmt`, read-only — this is what CI runs |
 | `bun run build` | Builds every package |
 | `bun run gen:docs` | Regenerates the function reference from the engine's own registry |
+| `bun run gen:mcp` | Regenerates the MCP server's served skill and doc copies |
 | `bun run --filter visimark build:playground` | Rebuilds the browser bundles committed under `docs/vendor/` |
 | `bun run serve` | Serves `docs/` on `http://localhost:8080` — needed for the playground and the tutorial pages, which fetch their content and cannot run from `file://` |
 | `bun run vscode-install` | Builds, packages and installs the VS Code extension locally |
@@ -122,6 +170,7 @@ the matching regeneration and **commit the result**:
 
 ```console
 $ bun run gen:docs                              # if you changed a builtin function
+$ bun run gen:mcp                               # if you changed SKILL.md or a served doc
 $ bun run --filter visimark build:playground    # if you changed engine or playground source
 ```
 
@@ -152,21 +201,35 @@ writes `docs/function-reference.md` and part of `docs/visimark-design.md` from
 the engine's own function registry, so that what the documents promise and what
 `visimark ref` prints cannot drift. Fix: run it and commit the result.
 
-**Every version-carrying file must agree.** Four files carry the version — three
-package manifests and `action.yml`'s pinned `version` default. One tag publishes
-all of them, and the Action's default is what a consumer's `npx` actually
-installs. You only touch these in a release commit; see
-[`docs/releasing.md`](docs/releasing.md).
+**The CLI and the committed browser bundle must agree.** `check`, `eval`, and
+`explain --json` are run for every worked example through both the real CLI
+and the bundle loaded in a `node:vm` sandbox
+(`scripts/cross-host-check.ts`); a divergence means the playground (already
+in production) would answer differently than the CLI for the same document.
+Fix: this is a real bug, not something to silence — find why the two hosts
+disagree, and fix the engine or the `ReaderPort` boundary, never the check.
 
-**The built CLI must run under Node, not only Bun.** A separate job builds with
-Bun and then exercises `dist/` under Node against the worked examples, including
-the drift invoice, which is required to *fail*. It also feeds the parser a
-pathological deeply nested expression and requires a finding rather than a stack
-overflow.
+**Every version-carrying file must agree.** Eleven fields carry the version —
+six package manifests (three of which also pin `visimark` as a dependency),
+`action.yml`'s pinned `version` default and `scripts/precommit-visimark-check.sh`.
+One tag publishes all of them, the Action's default is what a consumer's `npx`
+actually installs, and an exact `visimark` pin is what stops a published plugin
+or the MCP server pairing with an engine it was never tested against. You only touch these in a release commit; see
+[`docs/releasing.md`](docs/releasing.md). The same commit needs a dated
+`## X.Y.Z - YYYY-MM-DD` heading in `CHANGELOG.md` and in
+`editors/vscode/CHANGELOG.md`; a separate CI step checks that each has one.
 
-**A global install must work with only one runtime present.** Two smoke jobs
-install the packed tarball in a Node-only runner and a Bun-only container. The
-launcher has to work in both.
+**The built CLI must run under Node, not only Bun**
+([`.agents/rules/runtime-parity.md`](.agents/rules/runtime-parity.md)). A
+separate job builds with Bun and then exercises `dist/` under Node against the
+worked examples, including the drift invoice, which is required to *fail*. It
+also feeds the parser a pathological deeply nested expression and requires a
+finding rather than a stack overflow.
+
+**A global install must work with only one runtime present**
+([`.agents/rules/runtime-parity.md`](.agents/rules/runtime-parity.md)). Two
+smoke jobs install the packed tarball in a Node-only runner and a Bun-only
+container. The launcher has to work in both.
 
 **The repository's own documents must pass `visimark check`.** See the next
 section.
@@ -218,7 +281,10 @@ has to reproduce that document's own transcript, `fmt` has to leave the clean
 invoice untouched, and `infer` on the plain quote has to reproduce the proposal
 printed in its appendix. If you change engine behaviour, expect those to move —
 and look hard at the diff when they do, because those documents are what the
-README promises readers.
+README promises readers. The same twelve documents are also checked for
+cross-host agreement — `check`, `eval`, and `explain --json` must produce the
+same answer from the real CLI and from the committed browser bundle; see
+`scripts/cross-host-check.ts`.
 
 ## When a language change lands
 
@@ -263,7 +329,7 @@ That is fine, and it is normal in this repository. Credit it honestly:
 
 Do not copy a trailer out of an old commit, a plan or a command file: name the
 model that wrote *this* change. The full rule is
-[`.claude/rules/ai-attribution.md`](.claude/rules/ai-attribution.md).
+[`.agents/rules/ai-attribution.md`](.agents/rules/ai-attribution.md).
 
 The same standard applies to the content: an agent is reliable at writing
 formulas and unreliable at arithmetic, so let `visimark fmt` compute every

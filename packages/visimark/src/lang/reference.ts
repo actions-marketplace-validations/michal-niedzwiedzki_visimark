@@ -113,6 +113,14 @@ export interface FnDoc {
   errors: readonly FnError[];
   examples: readonly FnExample[];
   see?: readonly FunctionName[];
+  /**
+   * The prose spelling, where the language has one — `|x|` for `ABS`. It is
+   * documentation of the notation the parser accepts (`lang/notation.ts`), kept
+   * here so every renderer shows it in the same words. Where a spelling omits a
+   * parameter, it is a spelling of the call with that parameter's value: `⌊x⌋`
+   * is `FLOOR(x, 1)`.
+   */
+  prose?: string;
 }
 
 /**
@@ -125,6 +133,63 @@ const AMOUNTS = `| Amount |
 |  10.00 |
 |  20.00 |
 |  30.00 |
+
+\`\`\`vmark #t
+\`\`\`
+`;
+
+const CASH = `| Cash |
+|-----:|
+| -48000 |
+|  20000 |
+|  20000 |
+|  20000 |
+
+\`\`\`vmark #t
+\`\`\`
+`;
+
+const ONE = `| Cash |
+|-----:|
+| -48000 |
+
+\`\`\`vmark #t
+\`\`\`
+`;
+
+const PAIR = `| Cash |
+|-----:|
+|  100 |
+|  100 |
+
+\`\`\`vmark #t
+\`\`\`
+`;
+
+const IRR_TENTH = `| Cash |
+|-----:|
+| -100 |
+|  110 |
+
+\`\`\`vmark #t
+\`\`\`
+`;
+
+const IRR_MID = `| Cash |
+|-----:|
+| -100 |
+|    0 |
+|  121 |
+
+\`\`\`vmark #t
+\`\`\`
+`;
+
+const IRR_ZERO = `| Cash |
+|-----:|
+| -200 |
+|  100 |
+|  100 |
 
 \`\`\`vmark #t
 \`\`\`
@@ -179,6 +244,60 @@ export const FUNCTION_DOCS: Record<FunctionName, FnDoc> = {
     examples: [{ expr: "COUNT(t.Amount)", is: "3", given: AMOUNTS }],
     see: ["SUM"],
   },
+  NPV: {
+    summary:
+      "present value of a cash-flow column; row 0 is undiscounted; an empty column is a TYPE error",
+    params: [
+      { name: "rate", type: "number", note: "the rate for one period; must be greater than -1" },
+      {
+        name: "flows",
+        type: "column",
+        note: "cash flows in time order; the first row is period 0",
+      },
+    ],
+    returns: "number",
+    precision: { from: "declared" },
+    errors: [
+      { when: "a non-numeric `rate`", code: "TYPE" },
+      { when: "a `rate` of -1 or below", code: "TYPE" },
+      { when: "an empty column", code: "TYPE" },
+      { when: "a non-numeric cell", code: "TYPE" },
+      { when: "a non-column `flows` argument", code: "TYPE" },
+    ],
+    examples: [
+      { expr: "NPV(0, t.Cash)", is: "12000", given: CASH },
+      { expr: "NPV(0.08, t.Cash)", is: "-48000", given: ONE },
+      { expr: "NPV(-0.5, t.Cash)", is: "300", given: PAIR },
+    ],
+    see: ["SUM", "AVG"],
+  },
+  IRR: {
+    summary: "rate at which a cash-flow column has present value zero; row 0 is undiscounted",
+    params: [
+      {
+        name: "flows",
+        type: "column",
+        note: "cash flows in time order; the first row is period 0; exactly one sign change",
+      },
+    ],
+    returns: "number",
+    precision: { from: "declared" },
+    errors: [
+      { when: "an empty column", code: "TYPE" },
+      { when: "a non-numeric cell", code: "TYPE" },
+      { when: "an all-zero column", code: "TYPE" },
+      { when: "a column with no sign change", code: "TYPE" },
+      { when: "a column with more than one sign change", code: "TYPE" },
+      { when: "a rate not determined at the declared width", code: "PRECISION" },
+      { when: "a non-column `flows` argument", code: "TYPE" },
+    ],
+    examples: [
+      { expr: "IRR(t.Cash)", is: "0.1", given: IRR_TENTH },
+      { expr: "IRR(t.Cash)", is: "0.1", given: IRR_MID },
+      { expr: "IRR(t.Cash)", is: "0", given: IRR_ZERO },
+    ],
+    see: ["NPV", "PMT"],
+  },
   ROUND: {
     summary: "half-up to `places` decimals",
     params: [
@@ -206,6 +325,7 @@ export const FUNCTION_DOCS: Record<FunctionName, FnDoc> = {
       { expr: "ABS(-7)", is: "7" },
       { expr: "ABS(7)", is: "7" },
     ],
+    prose: "|x|",
   },
   MOD: {
     summary: "remainder",
@@ -215,7 +335,7 @@ export const FUNCTION_DOCS: Record<FunctionName, FnDoc> = {
     ],
     returns: "number",
     precision: { from: "operands", params: ["x", "y"] },
-    errors: [],
+    errors: [{ when: "a zero divisor", code: "TYPE" }],
     examples: [
       { expr: "MOD(7, 3)", is: "1" },
       { expr: "MOD(9, 3)", is: "0" },
@@ -232,6 +352,7 @@ export const FUNCTION_DOCS: Record<FunctionName, FnDoc> = {
       { expr: "SQRT(9)", is: "3" },
       { expr: "SQRT(0)", is: "0" },
     ],
+    prose: "√(x)",
   },
   FLOOR: {
     summary: "greatest multiple of `s` that does not exceed `x`, toward −∞",
@@ -247,6 +368,7 @@ export const FUNCTION_DOCS: Record<FunctionName, FnDoc> = {
       { expr: "FLOOR(-7, 3)", is: "-9" },
     ],
     see: ["CEILING", "ROUND"],
+    prose: "⌊x⌋",
   },
   CEILING: {
     summary: "least multiple of `s` that is not less than `x`, toward +∞",
@@ -262,6 +384,7 @@ export const FUNCTION_DOCS: Record<FunctionName, FnDoc> = {
       { expr: "CEILING(-7, 3)", is: "-6" },
     ],
     see: ["FLOOR", "ROUND"],
+    prose: "⌈x⌉",
   },
   IF: {
     summary: "returns `a` or `b`",
@@ -297,6 +420,26 @@ export const FUNCTION_DOCS: Record<FunctionName, FnDoc> = {
       { expr: "EOMONTH(2026-01-15, -1)", is: "2025-12-31" },
     ],
     see: ["MIN", "MAX"],
+  },
+  PMT: {
+    summary: "instalment that repays `pv` to zero over `nper` periods at per-period rate `rate`",
+    params: [
+      { name: "rate", type: "number", note: "the rate for one period; must be greater than -1" },
+      { name: "nper", type: "number", note: "a positive whole number of periods" },
+      { name: "pv", type: "number", note: "the present amount repaid down to zero" },
+    ],
+    returns: "number",
+    precision: { from: "declared" },
+    errors: [
+      { when: "a non-numeric `rate`, `nper`, or `pv`", code: "TYPE" },
+      { when: "a non-positive or non-whole `nper`", code: "TYPE" },
+      { when: "a `rate` of -1 or below", code: "TYPE" },
+    ],
+    examples: [
+      { expr: "PMT(0, 12, 1200)", is: "100" },
+      { expr: "PMT(0.10, 1, 1000)", is: "1100" },
+      { expr: "PMT(0, 4, 0)", is: "0" },
+    ],
   },
 };
 

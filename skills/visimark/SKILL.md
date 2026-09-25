@@ -114,19 +114,38 @@ later grows rules is reported too, so the marker cannot outlive its truth.
 ```bash
 visimark check FILE...                # read-only; exit 1 if anything disagrees,
                                        # or if a table has no rules at all
-visimark fmt   FILE... [--fix-dates]  # rewrite computed cells and anchors
+visimark fmt   FILE... [--fix-dates] [--no-artifacts]
+                                       # rewrite computed cells and anchors;
+                                       # --no-artifacts declines the chart SVG
+                                       # writes, and nothing else
 visimark infer FILE... [--write]      # propose rules for a document with none
-visimark eval  FILE [--get NAME] [--json]
+visimark eval  FILE [--scenario FILE|-] [--get NAME] [--json]
 visimark explain FILE [#sheet]        # rules and evaluation order
 visimark ref   [NAME] [--json]        # what a builtin function does; reads no file
 ```
 
+`fmt` writes two kinds of thing: it splices the document you named, and it
+writes whole SVG files at paths that document derives. Reach for
+`--no-artifacts` when you must not write files the user did not name — a
+read-only checkout, a sandbox, or a run whose point is to diff the result
+rather than keep it. It declines the write, never the verdict: `check` still
+reports every missing or stale chart as `STALE` and still exits `1`, so it is
+not a way to make a failing check pass.
+
 **Do not guess a function's behaviour.** `visimark ref NAME` prints its
 signature, parameters, return type, errors and worked examples; bare
-`visimark ref` lists all thirteen; `--json` is the machine-readable form. Every
+`visimark ref` lists all sixteen; `--json` is the machine-readable form. Every
 example it prints is executed against the evaluator in CI, so what it says is
 what the engine does. The same content is in
 [`docs/function-reference.md`](../../docs/function-reference.md).
+
+**What-if questions: declare a `param`, never edit the document.** A value a
+caller may want to vary — a rate, a cap, a headcount — is written
+`param tax precision 3 = default 19%` (`precision` required, a literal default).
+Every command treats it as its default. `visimark eval --scenario s.json FILE`
+evaluates with `{ "tax": "12.5%" }` instead and writes nothing: keys must name
+declared params, values must be JSON *strings* that fit the precision, and a
+percent param takes a percent. Only `eval` accepts `--scenario`.
 
 `infer` is advisory — it exits `0` whatever it finds — and it only ever
 inserts, so prose, headings, input columns and existing blocks are untouched.
@@ -139,6 +158,17 @@ guessing at a flag or at what an exit code meant. Two things from it worth
 knowing without looking: exit `1` means the document has problems and exit `2`
 means the command could not run at all, and `WARN`/`NOTE` are advice that is
 printed without failing anything.
+
+**If you cannot shell out, there is an MCP server.** `visimark-mcp` serves
+every command above as a tool — `visimark_check`, `visimark_fmt`,
+`visimark_infer`, `visimark_eval`, `visimark_explain`, `visimark_ref`, plus
+`visimark_fmt_apply` and `visimark_infer_apply` behind an operator-controlled
+write gate. Its read tools take a document as `content` as readily as a
+`path`, so a table you are drafting in context needs no temp file. It returns
+the same `--json` envelope, so every field means what this file says it means.
+Install it with `npm i -g visimark-mcp` or `bun add -g visimark-mcp`, or run
+it with `npx visimark-mcp` or `bunx visimark-mcp`. The full surface is
+[`docs/mcp.md`](../../docs/mcp.md).
 
 From a clone: `bun src/cli/main.ts check FILE`, or `node bin/visimark.js check FILE`
 once `bun run build` has been run. `npx visimark` for a published install.
@@ -180,7 +210,7 @@ or **16236.00**<!--vmark=lines.gross_total--> PLN gross.
 - **Precision** is usually silent. A value's decimal width follows from its
   formula wherever the arithmetic bounds it — `+ - MIN MAX SUM` take the wider
   operand, `*` sums the two, `COUNT` is 0, `ROUND`/`FLOOR`/`CEILING` take theirs
-  from an argument. **Division, `AVG` and `SQRT` bound nothing**, so a binding
+  from an argument. **Division, `AVG`, `SQRT`, `PMT`, `NPV` and `IRR` bound nothing**, so a binding
   using one must say how wide it writes: `name precision N = expr`, `N` from 0
   to 18. Not declaring it is a `PRECISION` error, and `fmt` will not guess for
   you. Declare it electively too wherever a column holds money and must stay at
@@ -236,7 +266,7 @@ stays exactly as written.
 | Two header cells sharing identical text is a `DUP` error | Neither becomes usable as a name — bare or quoted — until the headers are told apart. |
 | `is` is a reserved word | Naming a column or scalar `is` is refused; use it only for `"Header" is symbol` aliases. |
 | `precision` is a reserved word too | Naming anything `precision` is refused, and `precision = 2` is not a document setting — there is no document- or sheet-wide precision. It goes on the binding: `total precision 2 = …`. |
-| A division, `AVG` or `SQRT` with no `precision N` is a `PRECISION` error | No width follows from those operations. Take the width from what the document already shows, or decide it. |
+| A division, `AVG`, `SQRT`, `PMT`, `NPV` or `IRR` with no `precision N` is a `PRECISION` error | No width follows from those operations. Take the width from what the document already shows, or decide it. |
 | A number's width never comes from prose | Writing `0` as an anchor placeholder does **not** mean "zero decimals" any more. The anchor is rewritten at the binding's width, whatever you put there. |
 
 ## Editing an existing document
@@ -270,7 +300,7 @@ only a person can answer — do not paper over a `DATE`, `UNIT`, `CYCLE`,
 - You edited a value inside a `<!--vmark=…-->` anchor or a computed column.
 - You added a `Total` row to a table.
 - You wrote a date that is not exactly ten characters of `YYYY-MM-DD`.
-- You wrote a division, `AVG` or `SQRT` and did not say how wide it writes.
+- You wrote a division, `AVG`, `SQRT`, `PMT`, `NPV` or `IRR` and did not say how wide it writes.
 - You changed a number's decimals by editing the text in front of an anchor.
 - You silenced a finding by changing the number it complained about.
 

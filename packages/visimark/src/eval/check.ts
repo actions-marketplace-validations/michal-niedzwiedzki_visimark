@@ -1,6 +1,6 @@
 import { Decimal } from "decimal.js";
 import type { Expr, Ref } from "../lang/ast.js";
-import { NO_FORMULAS_MARKER, type RawTable, type Span } from "../parse/document.js";
+import { NO_FORMULAS_MARKER, type RawTable } from "../parse/document.js";
 import {
   type Assertion,
   type Binding,
@@ -10,12 +10,13 @@ import {
   type Sheet,
 } from "../model/types.js";
 import { closest } from "../report/levenshtein.js";
-import { evalExpr, type EvalEnv } from "./evaluate.js";
+import { evalExpr, irrBand, irrEndsDisagree, type EvalEnv } from "./evaluate.js";
 import { describeCallProblem, FUNCTIONS, isReduce } from "./functions.js";
 import { dependencies, refText, resolve, topoOrder } from "./graph.js";
 import { resolveImports } from "../import/resolve.js";
 import type { ImportStatus } from "../model/types.js";
 import { derivePrecision, type Width } from "./precision.js";
+import { percentDisplay } from "./percent-display.js";
 import { applyUnit, cellPrecision, parseDecorated, type Unit } from "./units.js";
 import {
   EvalError,
@@ -82,7 +83,7 @@ export interface CheckResult {
   exitCode: 0 | 1;
 }
 
-const PERCENT_RE = /^(\d+(?:\.\d+)?)%$/;
+const PERCENT_RE = /^(-?)(\d+(?:\.\d+)?)%$/;
 
 export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
   // Imported sheets must be resolved — their table, column index, and input
@@ -342,6 +343,47 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
     }
   }
 
+  /**
+   * A `param` must declare its width, and its default must fit it: a value
+   * arriving from outside has no width the document can derive, and a default
+   * the declaration would round is not the value the reader sees. Emits the
+   * `PRECISION` finding and returns false otherwise. See
+   * docs/design/scenario-params-spec.md §3.1 and §4.1.
+   */
+  function paramWidthOk(binding: Binding): boolean {
+    const param = binding.param!;
+    if (binding.precision === undefined) {
+      emit(
+        {
+          code: "PRECISION",
+          sheetId: binding.sheetId,
+          name: binding.name,
+          message: `param ${binding.name} declares no width`,
+          suggestion: `param ${binding.name} precision N = default …`,
+          span: binding.span,
+        },
+        { sheetId: binding.sheetId },
+      );
+      return false;
+    }
+    const value = binding.expr.type === "num" ? new Decimal(binding.expr.value) : null;
+    const places = value?.decimalPlaces() ?? 0;
+    if (places > binding.precision) {
+      emit(
+        {
+          code: "PRECISION",
+          sheetId: binding.sheetId,
+          name: binding.name,
+          message: `default ${param.text} has ${places} decimal${places === 1 ? "" : "s"}; param ${binding.name} declares ${binding.precision}`,
+          span: binding.span,
+        },
+        { sheetId: binding.sheetId },
+      );
+      return false;
+    }
+    return true;
+  }
+
   /** the `PRECISION` finding: no declared width, and none follows from the formula */
   function emitNotDerivable(binding: Binding): void {
     emit(
@@ -373,6 +415,31 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
       },
       { sheetId: binding.sheetId },
     );
+  }
+
+  function rejectUndeterminedIrr(
+    binding: Binding,
+    v0: Value,
+    prec: number | null,
+    rowLabelText?: string,
+  ): boolean {
+    if (prec === null || v0.t !== "num") return false;
+    const band = irrBand(v0.d);
+    if (!band) return false;
+    if (!irrEndsDisagree(band.lo, band.hi, prec)) return false;
+    emit(
+      {
+        code: "PRECISION",
+        sheetId: binding.sheetId,
+        name: binding.name,
+        ...(rowLabelText === undefined ? {} : { rowLabel: rowLabelText }),
+        message: `IRR did not determine a rate at precision ${prec}`,
+        span: binding.span,
+      },
+      { sheetId: binding.sheetId },
+    );
+    unevaluable.add(binding.id);
+    return true;
   }
 
   function evalColumn(binding: Binding, sheet: Sheet, table: RawTable): void {
@@ -416,6 +483,7 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
           unevaluable.add(binding.id);
           return;
         }
+        if (rejectUndeterminedIrr(binding, v0, prec, rowLabel(table, r))) return;
         const v = prec === null ? v0 : roundValue(v0, prec);
         out.push(v);
         const cell = table.rows[r]!.cells[idx];
@@ -485,6 +553,10 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
   }
 
   function evalScalar(binding: Binding): void {
+    if (binding.param !== undefined && !paramWidthOk(binding)) {
+      unevaluable.add(binding.id);
+      return;
+    }
     try {
       const v0 = evalExpr(binding.expr, scalarEnv(binding));
       if (v0.t === "bool") {
@@ -530,24 +602,79 @@ export function check(model: DocModel, opts: CheckOptions = {}): CheckResult {
         unevaluable.add(binding.id);
         return;
       }
+      if (rejectUndeterminedIrr(binding, v0, prec)) return;
       const v = prec === null ? v0 : roundValue(v0, prec);
       values.set(binding.id, v);
 
-      if (anchorText !== undefined && prec !== null && !matchesStored(v, anchorText, prec)) {
-        staleScalars.add(binding.id);
-        if (!isCrossSheetAggregate(model, binding)) {
+      const mine = valueAnchorsOf(model, binding.id);
+      const percentMine = mine.filter((a) => a.percent);
+      let sigilBlocked = false;
+      if (percentMine.length > 0 && v.t !== "num") {
+        emit(
+          {
+            code: "TYPE",
+            sheetId: binding.sheetId,
+            name: binding.name,
+            message: "a % sigil is only legal on a numeric scalar",
+            span: percentMine[0]!.commentSpan,
+          },
+          { sheetId: binding.sheetId },
+        );
+        sigilBlocked = true;
+      }
+      if (prec !== null && prec < 2 && percentMine.length > 0 && v.t === "num") {
+        emit(
+          {
+            code: "PRECISION",
+            sheetId: binding.sheetId,
+            name: binding.name,
+            message: `percent display needs precision 2 or more; ${binding.name} has ${prec}`,
+            span: percentMine[0]!.commentSpan,
+          },
+          { sheetId: binding.sheetId },
+        );
+        sigilBlocked = true;
+      }
+      for (const a of percentMine) {
+        const text = model.source.slice(a.value!.start, a.value!.end);
+        const d = parseDecorated(text);
+        if (d.kind === "both-sides" || (d.kind === "number" && d.unit)) {
           emit(
             {
-              code: "STALE",
+              code: "UNIT",
               sheetId: binding.sheetId,
               name: binding.name,
-              stored: anchorText,
-              computed: applyUnit(showValue(v, prec), anchorUnit),
-              formula: formulaText(model, binding),
-              span: anchorValueSpanOf(model, binding.id) ?? binding.span,
+              message: "cannot mix a unit with percent display",
+              span: a.value ?? a.commentSpan,
             },
             { sheetId: binding.sheetId },
           );
+          sigilBlocked = true;
+        }
+      }
+
+      if (!sigilBlocked && prec !== null && v.t === "num" && mine.length > 0) {
+        for (const a of mine) {
+          const text = model.source.slice(a.value!.start, a.value!.end);
+          if (matchesStored(v, text, prec)) continue;
+          staleScalars.add(binding.id);
+          if (!isCrossSheetAggregate(model, binding)) {
+            emit(
+              {
+                code: "STALE",
+                sheetId: binding.sheetId,
+                name: binding.name,
+                stored: text,
+                computed: a.percent
+                  ? percentDisplay(v, prec)
+                  : applyUnit(showValue(v, prec), anchorUnit),
+                formula: formulaText(model, binding),
+                span: { start: a.value!.start, end: a.value!.end },
+              },
+              { sheetId: binding.sheetId },
+            );
+          }
+          break;
         }
       }
     } catch (e) {
@@ -872,8 +999,9 @@ export function matchesStored(v: Value, storedText: string, places: number): boo
     if (dec.kind === "number") {
       return roundToPlaces(new Decimal(dec.num), places).equals(roundToPlaces(v.d, places));
     }
-    if (!PERCENT_RE.test(t)) return false;
-    const stored = new Decimal(PERCENT_RE.exec(t)![1]!).div(100);
+    const pm = PERCENT_RE.exec(t);
+    if (!pm) return false;
+    const stored = new Decimal((pm[1] ?? "") + pm[2]!).div(100);
     return roundToPlaces(stored, places).equals(roundToPlaces(v.d, places));
   }
   if (v.t === "date") return t === v.iso;
@@ -974,19 +1102,18 @@ function formulaText(model: DocModel, binding: Binding): string | undefined {
 function isCrossSheetAggregate(model: DocModel, binding: Binding): boolean {
   const e = binding.expr;
   if (e.type !== "call" || !isReduce(e.name)) return false;
-  const arg = e.args[0];
+  const spec = FUNCTIONS.get(e.name);
+  if (!spec || spec.kind !== "reduce") return false;
+  const arg = e.args[spec.column];
   if (!arg || arg.type !== "ref") return false;
   const res = resolve(model, binding.sheetId, arg);
   return (res.kind === "column" || res.kind === "input-column") && res.sheetId !== binding.sheetId;
 }
 
-function anchorValueSpanOf(model: DocModel, id: string): Span | undefined {
-  for (const a of model.anchors) {
-    if (`${a.sheetId}.${a.name}` === id && a.value) {
-      return { start: a.value.start, end: a.value.end };
-    }
-  }
-  return undefined;
+function valueAnchorsOf(model: DocModel, id: string) {
+  return model.anchors.filter(
+    (a) => `${a.sheetId}.${a.name}` === id && a.value !== null && a.value.kind !== "image",
+  );
 }
 
 function anchorValueText(model: DocModel, id: string): string | undefined {

@@ -61,7 +61,10 @@ test("ref --json emits the structured envelope", async () => {
 test("ref --json with no name lists every function", async () => {
   const c = capture();
   expect(await runCli(["ref", "--json"], c.io)).toBe(0);
-  expect(JSON.parse(c.out()).functions).toHaveLength(13);
+  const functions = JSON.parse(c.out()).functions;
+  expect(functions).toHaveLength(16);
+  const names = functions.map((f: { name: string }) => f.name);
+  expect(names).toEqual(expect.arrayContaining(["IRR", "NPV", "PMT"]));
 });
 
 test("ref --json on an unknown name emits the error envelope", async () => {
@@ -72,10 +75,11 @@ test("ref --json on an unknown name emits the error envelope", async () => {
   expect(doc.error.code).toBe("USAGE");
 });
 
-test("an unrecognised flag is ignored, as elsewhere in the CLI", async () => {
+test("an unrecognised flag is refused, as elsewhere in the CLI", async () => {
   const c = capture();
-  expect(await runCli(["ref", "SUM", "--jsonn"], c.io)).toBe(0);
-  expect(c.out()).toContain("SUM(col)");
+  expect(await runCli(["ref", "SUM", "--jsonn"], c.io)).toBe(2);
+  expect(c.err()).toBe("visimark: unknown option --jsonn — did you mean `--json`?");
+  expect(c.out()).toBe("");
 });
 
 // A `PRECISION` finding sends the author to `visimark ref` to find out why a

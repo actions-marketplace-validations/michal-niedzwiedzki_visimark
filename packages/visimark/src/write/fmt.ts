@@ -1,6 +1,7 @@
 import { locate } from "../parse/document.js";
 import { build } from "../model/build.js";
 import { check, type CheckResult, matchesStored, roundValue, showValue } from "../eval/check.js";
+import { isPercentText, percentDisplay } from "../eval/percent-display.js";
 import type { DocumentFile } from "../fs/reader.js";
 import type { DocModel, Finding } from "../model/types.js";
 import { applyUnit } from "../eval/units.js";
@@ -8,6 +9,11 @@ import { applyEdits, type Edit } from "./splice.js";
 
 export interface FmtOptions {
   fixDates?: boolean;
+  /** decline the write of generated artifacts: `fmt` still splices the
+   *  document, but returns no artifact for the caller to write. The finding is
+   *  unaffected — `check` still reports a missing or stale artifact as STALE.
+   *  See `docs/design/a-no-artifacts-flag-for-fmt-spec.md`. */
+  noArtifacts?: boolean;
   /** where the document lives and how to read the files around it — needed to
    *  resolve and write its artifacts. See `CheckOptions.doc`. */
   doc?: DocumentFile;
@@ -40,8 +46,11 @@ export interface FmtResult {
   /** import stamps added or corrected — never the CSV file itself */
   stampsUpdated: number;
   unfixable: Finding[];
-  /** artifacts that are stale or missing — the caller writes them */
+  /** artifacts that are stale or missing — the caller writes them. Always
+   *  empty under `FmtOptions.noArtifacts`. */
   artifacts: ArtifactWrite[];
+  /** how many artifacts `noArtifacts` declined; `0` when it is not set */
+  artifactsSkipped: number;
 }
 
 /** an edit together with the finding it resolves, so a diagnostic can be
@@ -88,6 +97,12 @@ export function planFmt(model: DocModel, result: CheckResult, opts: FmtOptions):
     }
   }
 
+  const sigilBlocked = new Set(
+    result.findings
+      .filter((f) => f.code === "PRECISION" || f.code === "TYPE" || f.code === "UNIT")
+      .map((f) => `${f.sheetId ?? ""}.${f.name ?? ""}`),
+  );
+
   // 2. anchored scalar values
   for (const a of model.anchors) {
     if (!a.value) continue;
@@ -102,13 +117,21 @@ export function planFmt(model: DocModel, result: CheckResult, opts: FmtOptions):
     // placeholder in prose round the stored value.
     const prec = result.scalarPrecision.get(id);
     if (prec === undefined) continue;
+    if (a.percent && sigilBlocked.has(id)) continue;
     const unit = result.scalarUnits.get(id) ?? null;
     const rounded = roundValue(v, prec);
-    if (!matchesStored(rounded, current, prec)) {
+    const wanted = a.percent
+      ? percentDisplay(rounded, prec)
+      : applyUnit(showValue(rounded, prec), unit);
+    const rewrite =
+      a.percent || isPercentText(current)
+        ? current !== wanted
+        : !matchesStored(rounded, current, prec);
+    if (rewrite) {
       edits.push({
         start: a.value.start,
         end: a.value.end,
-        text: applyUnit(showValue(rounded, prec), unit),
+        text: wanted,
         finding: findingFor(a.value.start, a.value.end),
       });
     }
@@ -217,6 +240,10 @@ export function fmt(source: string, opts: FmtOptions = {}): FmtResult {
     });
   }
 
+  // `noArtifacts` withholds the artifacts from the caller; it does not change
+  // what was found. `unfixable` above is untouched, which is what keeps the
+  // exit code the same — a chart's STALE finding is filtered by
+  // `FIXABLE_BY_FMT` whether or not its SVG is written.
   return {
     output,
     changed: output !== source,
@@ -225,7 +252,8 @@ export function fmt(source: string, opts: FmtOptions = {}): FmtResult {
     datesFixed,
     stampsUpdated,
     unfixable,
-    artifacts,
+    artifacts: opts.noArtifacts ? [] : artifacts,
+    artifactsSkipped: opts.noArtifacts ? artifacts.length : 0,
   };
 }
 

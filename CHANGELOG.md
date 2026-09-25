@@ -2,6 +2,202 @@
 
 ## Unreleased
 
+### Added
+
+- **The committed browser bundle's size is now checked** (issue #191).
+  `docs/vendor/visimark-browser.js` could grow without anything noticing — the
+  `playground-bundle` CI job only checks rebuild fidelity against a fresh build, never
+  size. A new assertion in `browser-graph.test.ts` fails when the bundle exceeds 10%
+  over its recorded 299,700-byte baseline, so growth is now a reviewable CI failure
+  instead of an unwatched minified-file diff. The second of three follow-ups spiked in
+  #176's architectural-spike check 4.
+  See [`browser-bundle-size-spec.md`](docs/design/browser-bundle-size-spec.md).
+
+- **`smoke-node` and `smoke-bun` now prove `visimark` and `visimark-mcp`
+  are importable, not just runnable** (issue #190). Both jobs already
+  installed the packed tarballs and ran the CLI/server through their
+  `bin`; neither ever did `import("visimark")` and used the result, which
+  is exactly how #170 shipped — a broken `exports` condition that failed
+  module resolution while the `bin` kept working. Each job now also
+  resolves the installed package's `node_modules` directory and imports
+  both packages directly, calling `check()` and `engineVersion()`
+  respectively.
+
+- **A `cross-host` CI check** (issue #189). `check`, `eval`, and
+  `explain --json` are now run for every worked-example document through both
+  the real CLI and the committed browser bundle, and the build fails on any
+  divergence between them. No existing test compared one host's answer to
+  another's — each checked one host against fixed expectations — so the class
+  of bug that took the public playground down for 74 minutes (PR #93,
+  shipped by #95, fixed by #99) would have stayed invisible to CI.
+  See [`cross-host-equivalence-check-spec.md`](docs/design/cross-host-equivalence-check-spec.md).
+
+- **`markdownlint-rule-visimark`: report an `analyze()` failure once, not
+  seventeen times** (issue #173). A bug in the engine, not a document defect,
+  used to surface as seventeen copies of the same stack trace — one per rule
+  — because a thrown `analyze()` left the shared cache unfilled. A new
+  eighteenth rule, `visimark-engine-error`, is now the one place it is
+  reported, on line 1, and the cache holds the failure the same way it holds
+  a success. Also corrects the package's doc comment, which claimed its
+  HTML-comment restoration is byte-for-byte: it is not, for a comment inside
+  a fenced/indented code block or an inline code span, or for a CRLF
+  document's multi-line comment — both harmless today, now tested.
+  See [`pin-what-the-markdownlint-rule-restores-spec.md`](docs/design/pin-what-the-markdownlint-rule-restores-spec.md).
+
+- **`visimark-mcp`** (issue #169) — a new published package: a stdio
+  [MCP](https://modelcontextprotocol.io) server over the same engine, for an
+  agent working in a repository that has never heard of the project. All six
+  commands as tools (`visimark_check`, `_eval`, `_explain`, `_infer`, `_fmt`,
+  `_ref`), the authoring discipline as resources, and two prompts. The read
+  tools take a document as `content` as readily as a `path`, so a table an
+  agent is drafting in context needs no temp file; `content` mode names the
+  imports and charts it could not verify under `skipped` rather than letting
+  them read as a clean pass. Results are the existing `--json` envelope, not a
+  reshaped one, and a document with findings is a **successful** tool call.
+  `visimark_fmt` and `visimark_infer` only plan; `visimark_fmt_apply` and
+  `visimark_infer_apply` write, and are refused unless the operator started
+  the server with `--allow-write` **and** the host declared a root — no roots
+  means no writes — and refused again if the document moved since the plan was
+  computed. Install with `npm i -g visimark-mcp` or `bun add -g visimark-mcp`;
+  run with `npx visimark-mcp` or `bunx visimark-mcp`.
+  See [`mcp.md`](docs/mcp.md) and
+  [`mcp-server-spec.md`](docs/design/mcp-server-spec.md).
+
+- **`fmt --no-artifacts`** (issue #168). Declines the write of generated
+  artifacts — the SVGs a `chart` statement declares — and nothing else.
+  Computed cells, anchored values and import stamps are still spliced, and
+  `--fix-dates` still applies. `check` is unaffected: a missing or stale
+  artifact is still `STALE`, still counted, still exit `1`. The summary line
+  names the count (`unchanged, 5 artifacts skipped`), and `fmt --json` gains an
+  always-present `artifactsSkipped`, per file and in the summary. For a caller
+  that must not touch files it did not name; not a way to stop committing
+  charts.
+  See [`a-no-artifacts-flag-for-fmt-spec.md`](docs/design/a-no-artifacts-flag-for-fmt-spec.md).
+
+- **`IRR(flows)`** — the sixteenth builtin (issue #158). The rate at which a
+  cash-flow column has present value zero, using `NPV`'s period index: row 0
+  is not discounted. Exactly one sign change among the non-zero cells. No
+  guess. A written result declares its width, and that width is the rounding
+  of the root. A blank, an empty column, an all-zero column, or any other
+  number of sign changes, is `TYPE`. A root the 40-digit working precision
+  cannot pin is `PRECISION`. `ref` lists sixteen functions: `IRR`, `NPV`, and
+  `PMT` among them.
+  See [`irr-spec.md`](docs/vocab/irr-spec.md).
+
+- **`NPV(rate, flows)`** — the fifteenth builtin (issue #157). The present value
+  of a cash-flow column at a per-period rate. Row 0 is not discounted; row `k`
+  is divided by `(1 + rate) ^ k`. A zero rate equals the sum of the column, and
+  a written result still declares its width. A blank cell, an empty column, a
+  non-column `flows`, or a rate of -1 or below, is `TYPE`.
+  See [`npv-spec.md`](docs/vocab/npv-spec.md).
+
+- **`PMT(rate, nper, pv)`** — the fourteenth builtin (issue #156). The instalment
+  that repays a present amount over a positive whole number of periods at a
+  per-period rate, paid at the end of each period. A zero rate is `pv / nper`.
+  A written result declares its width, as division does. A non-positive or
+  non-whole term, or a rate of -1 or below, is `TYPE`.
+  See [`pmt-spec.md`](docs/vocab/pmt-spec.md).
+
+- **A `.pre-commit-hooks.yaml` for the [pre-commit](https://pre-commit.com) framework** —
+  a repository can now add `repo: https://github.com/michal-niedzwiedzki/visimark`,
+  `rev: v0.1.7`, `hooks: [id: visimark]` to `.pre-commit-config.yaml` instead of
+  hand-copying the recipe in [`ci.md`](docs/ci.md) chapter 23. Works on Node, Bun,
+  or both. See [`pre-commit-hook-spec.md`](docs/design/pre-commit-hook-spec.md)
+  and [#149](https://github.com/michal-niedzwiedzki/visimark/issues/149).
+- A `remark`/`unified` plugin, `remark-lint-visimark`, reports `visimark check`
+  findings as `VFile` messages inside an existing `remark`/`remark-lint`
+  pipeline. See [`remark-plugin-spec.md`](docs/design/remark-plugin-spec.md)
+  and [#152](https://github.com/michal-niedzwiedzki/visimark/issues/152).
+- A `markdownlint` custom rule package, `markdownlint-rule-visimark`, reports
+  `visimark check` findings inside an existing `markdownlint`/`markdownlint-cli2`
+  run — one rule per finding kind, plus a `recommended` config fragment whose
+  exit code agrees with `check`'s. See
+  [`markdownlint-rule-spec.md`](docs/design/markdownlint-rule-spec.md)
+  and [#153](https://github.com/michal-niedzwiedzki/visimark/issues/153).
+
+### Changed
+
+- **Node support is now the current LTS and newer** — `engines.node` moves from
+  `>=18` to `>=24`. Node 18 reached end-of-life in April 2025 and Node 20 in
+  April 2026, so the old floor had been a claim about an unsupported runtime
+  for over a year, and no CI job ever exercised it. The Node-facing jobs now
+  run on the current LTS **and** the latest stable release, both blocking, and
+  a new `node-support-policy` job asserts that every published `engines.node`
+  equals the LTS that `lts/*` resolves to and that no workflow, or the
+  published `action.yml` composite Action, pins a numeric Node version. Bun is
+  unaffected. The policy is
+  [`.agents/rules/runtime-parity.md`](.agents/rules/runtime-parity.md).
+
+## 0.1.7 - 2026-09-22
+
+### Changed
+
+- **Breaking:** every command now refuses an option it does not recognise, or
+  one that belongs to another command, with exit `2` and a `visimark: …` line
+  on stderr. Before, the option was ignored and the run reported success. If a
+  job now fails with `unknown option` or `is only valid with`, remove the
+  option or move it to the command that owns it. To use an option a newer
+  release added, pin the engine, and the Action ref, to that release. A
+  misplaced `--scenario`, or `--scenario` with no value, now reports
+  `error.code: "USAGE"` under `--json` instead of `"SCENARIO"`. See
+  [`refuse-unrecognised-and-misplaced-cli-options-spec.md`](docs/design/refuse-unrecognised-and-misplaced-cli-options-spec.md)
+  and [#121](https://github.com/michal-niedzwiedzki/visimark/issues/121).
+
+### Added
+
+- **Percent display sigil on prose anchors** (issue #140) — `<!--vmark=sheet.scalar%-->`
+  asks `fmt` to print the stored ratio as a percent (× 100 at precision − 2,
+  with a leading minus when negative). The stored number does not change.
+  `check`'s verdict stays numeric. A `%` sigil on a date, string, or chart is
+  `TYPE`; mixed with a unit in the same span, `UNIT`; on a binding whose width
+  is below 2, `PRECISION`. Scientific `^` is [#142](https://github.com/michal-niedzwiedzki/visimark/issues/142).
+  See [`presentation-only-percent-display-sigil-spec.md`](docs/design/presentation-only-percent-display-sigil-spec.md)
+  and [#140](https://github.com/michal-niedzwiedzki/visimark/issues/140).
+
+- **Prose spellings for four functions** (issue #64) — `|x|` is `ABS(x)`, `⌊x⌋`
+  is `FLOOR(x, 1)`, `⌈x⌉` is `CEILING(x, 1)` and `√(x)` is `SQRT(x)`, so a
+  reconciliation reads `assert |variance| <= 0.05`. Each resolves to the same
+  call before evaluation: no new semantics, no new finding code, and both
+  spellings stay legal. `|x|` nests (`||a - b| - 1|`), and a mismatched pair such
+  as `⌊x⌉` is a `TYPE` error. `fmt` never rewrites one spelling to the other, and
+  `infer` still proposes the code names. The function table and
+  `docs/function-reference.md` list each spelling beside its call, and the
+  tutorial capstone now uses `|variance|`. Editor hover on a call written as a
+  glyph now targets the glyph, which also fixes `Σ(Net)`, whose first characters
+  hovered as `SUM`. See
+  [`prose-notation-for-existing-unary-spec.md`](docs/design/prose-notation-for-existing-unary-spec.md)
+  and [#64](https://github.com/michal-niedzwiedzki/visimark/issues/64).
+
+## 0.1.6 - 2026-09-20
+
+### Fixed
+
+- **Division by zero is a `TYPE` error**, not a value. `/` and `MOD` with a
+  zero divisor (including `-0`) report `division by zero`; a non-finite
+  `Decimal` (`0 ^ -1`, `(-2) ^ 0.5`) reports `result is not a finite
+  decimal`. `check` no longer treats these as `STALE`, and `fmt` does not
+  write `Infinity` or `NaN` into the document. See
+  [`division-by-zero-evaluates-to-infinity-spec.md`](docs/design/division-by-zero-evaluates-to-infinity-spec.md)
+  and [#122](https://github.com/michal-niedzwiedzki/visimark/issues/122).
+
+### Added
+
+- **Scenario parameters: `param` and `eval --scenario`.** A `vmark` block may
+  declare `param tax precision 3 = default 19%`, a numeric scalar that is
+  exactly `tax precision 3 = 19%` in every command except one.
+  `visimark eval --scenario FILE` (or `-` for stdin) evaluates the document
+  with the values in a flat JSON object such as `{ "tax": "12.5%" }` in place
+  of the defaults, and writes nothing. Keys must name declared params, values
+  must be JSON strings that fit the declared precision, and a percent param
+  takes only a percent. Any fault is exit `2` with JSON error code `SCENARIO`.
+  The output quotes the scenario beside the values, and a false `assert` says
+  whether it holds on the defaults. `check`, `fmt`, `infer`, `explain` and
+  `ref` refuse `--scenario` rather than ignore it. `param` and `default` are
+  contextual, so no word becomes reserved and `param = 5` still binds a
+  scalar. `explain` lists params apart from scalars. See
+  [`docs/design/scenario-params-spec.md`](docs/design/scenario-params-spec.md)
+  and [#119](https://github.com/michal-niedzwiedzki/visimark/issues/119).
+
 ## 0.1.5 - 2026-09-17
 
 ### Changed
@@ -359,6 +555,8 @@ record that the publish happened, and making the history read clean after the
 fact is the kind of underived edit this project exists to catch. There is no
 0.1.0 of the VS Code extension.
 
+[0.1.7]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.7
+[0.1.6]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.6
 [0.1.5]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.5
 [0.1.4]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.4
 [0.1.3]: https://github.com/michal-niedzwiedzki/visimark/releases/tag/v0.1.3

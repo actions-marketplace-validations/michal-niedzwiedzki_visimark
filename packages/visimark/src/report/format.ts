@@ -187,15 +187,12 @@ function renderGroup(f: Finding): string[] {
           (f.raw
             ? `\`${f.raw}\` has no derivable precision`
             : "no precision declared and none follows from the formula"));
-      return [
-        head,
-        ...(f.message
-          ? []
-          : [
-              " ".repeat(prefix("PRECISION").length) +
-                `declare the width: \`${f.name ?? "name"} precision N = …\``,
-            ]),
-      ];
+      const hint = f.message
+        ? f.suggestion
+          ? `write \`${f.suggestion}\``
+          : undefined
+        : `declare the width: \`${f.name ?? "name"} precision N = …\``;
+      return [head, ...(hint ? [" ".repeat(prefix("PRECISION").length) + hint] : [])];
     }
     case "ANCHOR":
       return [
@@ -224,6 +221,61 @@ function renderGroup(f: Finding): string[] {
       ];
     default:
       return [prefix(f.code) + id(f)];
+  }
+}
+
+/**
+ * A single-line, plain-English sentence for one finding — the same
+ * information formatCheck's per-code branches carry, flattened to one line
+ * with no column padding and no ANSI. Used by anything that reports a
+ * finding outside a fixed-width terminal report (the remark plugin,
+ * `remark-lint-visimark`).
+ */
+export function describeFinding(f: Finding): string {
+  switch (f.code) {
+    case "STALE":
+      if (f.artifact !== undefined) return f.message ?? "";
+      return (
+        `${f.sheetId ?? ""}.${f.name ?? ""}` +
+        (f.rowLabel ? ` (${f.rowLabel})` : "") +
+        `: stored ${f.stored ?? ""} ≠ computed ${f.computed ?? ""}` +
+        (f.formula ? ` (${f.formula})` : "")
+      );
+    case "ASSERT":
+      return `${f.source ?? ""}: ${f.message ?? ""} is false`;
+    case "DATE": {
+      const head = `"${f.raw ?? ""}" is not an ISO 8601 date (YYYY-MM-DD)`;
+      if (f.isoFix) return `${head}; unambiguous fix is ${f.isoFix}`;
+      if (f.altA && f.altB)
+        return `${head}; ambiguous: ${f.altA} or ${f.altB}, ${f.daysApart} days apart`;
+      return head;
+    }
+    case "UNDEF":
+      return (
+        `unknown name \`${f.raw}\`` + (f.suggestion ? `; did you mean \`${f.suggestion}\`?` : "")
+      );
+    case "DUP":
+      return `\`${f.name}\` is already defined in this scope`;
+    case "VECTOR":
+      return `\`${f.raw}\` is a column, not a value — wrap it in an aggregate`;
+    case "CYCLE":
+      return (f.cyclePath ?? []).join(" → ");
+    case "WARN":
+      return (
+        `${f.sheetId ?? ""}.${f.name ?? ""} is defined and never read` +
+        (f.suggestion ? ` — did you mean \`${f.suggestion}\`?` : "")
+      );
+    case "PRECISION":
+      return (
+        f.message ??
+        (f.raw
+          ? `\`${f.raw}\` has no derivable precision`
+          : "no precision declared and none follows from the formula")
+      );
+    default:
+      // UNIT, SHEET, IMPORT, COVERAGE, ARTIFACT, TYPE, ANCHOR, NOTE — format.ts's
+      // own renderGroup() branches already treat f.message as a complete sentence.
+      return f.message ?? "";
   }
 }
 

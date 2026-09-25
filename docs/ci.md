@@ -270,7 +270,7 @@ pins the engine it installs. Chapter 12 goes into why that matters.
 |---|---|---|
 | `files` | `**/*.md` | Space-separated glob(s) of Markdown files to check |
 | `command` | `check` | `check` or `fmt` |
-| `args` | *(empty)* | Extra flags, for example `--fix-dates` |
+| `args` | *(empty)* | Extra flags for the command; each must be valid for `command`, for example `--fix-dates` for `fmt` |
 | `version` | the release this Action ref ships | npm version or dist-tag of the engine to install |
 
 There is no strictness dial, no config file and no rule set to choose. Pointing
@@ -632,7 +632,7 @@ broken. It disappears when the real problem above it is fixed.
 Changing the number a finding complains about is the one move that turns a
 caught error into a hidden one.
 
-The full list, with an example of each, is chapter 18 of the tutorial and
+The full list, with an example of each, is chapter 21 of the tutorial and
 [`cli-reference.md`](cli-reference.md).
 
 ## 14. Annotations on the diff
@@ -732,11 +732,13 @@ treat "no findings printed" as success — check the exit code.
 
 ### About `--jsonn`
 
-Unrecognised options are ignored rather than rejected, so that a workflow
-passing a flag a future version does not know about still runs. The cost is that
-a typo is silent: `--jsonn` is not `--json`, it is nothing. If a step that should
-print JSON prints a human report instead, check the spelling before anything
-else.
+A misspelled or misplaced option is refused, not ignored: `--jsonn` exits `2` with
+``visimark: unknown option --jsonn — did you mean `--json`?``, and `--fix-dates`
+with `check` exits `2` with `--fix-dates is only valid with fmt`. Nothing is read
+or written first. A step that fails this way is wrong about how it calls
+`visimark`; read the message, which names the option. A workflow that passes a
+flag only a newer release knows must pin that release, because an older engine
+now refuses it.
 
 ## 15. A job summary
 
@@ -824,7 +826,7 @@ the documents are being corrected by a process nobody is reading.
 
 **Behind format-on-save in an editor.** There is a language server and a VS Code
 client; `fmt` runs as an ordinary formatter, so it behaves like every other
-formatter you have. See chapter 25 of the tutorial.
+formatter you have. See chapter 28 of the tutorial.
 
 A local Git hook is the third option, and chapter 23 has one.
 
@@ -931,6 +933,14 @@ Do not "fix" this by running `fmt` in CI to regenerate the file — see chapter 
 Commit the SVG. It is data, not output: `check` proves its provenance, which is
 the only claim that can be verified about a picture.
 
+`fmt --no-artifacts` declines the artifact write for a caller that must not
+touch files it did not name — a read-only checkout, a sandboxed build, a job
+that runs `fmt` to diff the result rather than keep it. It is **not** a way to
+stop committing charts. It declines a write, never a verdict: `check` still
+reports every missing or stale artifact as `STALE`, still counts it, and still
+exits `1`. A repository that gitignores its SVGs still fails this way, and
+still should.
+
 ## 20. Reading values out of a document in CI
 
 A checked document is not only a thing CI verifies. It is a thing CI can
@@ -1032,7 +1042,7 @@ The same thing in a GitHub workflow, if you prefer not to use the Action:
           npx --yes visimark@0.1.5 check docs/**/*.md
 ```
 
-VisiMark needs Node 18 or newer, or Bun. On Windows the launcher needs `sh` on
+VisiMark needs the current Node LTS or newer, or Bun. On Windows the launcher needs `sh` on
 the PATH — Git Bash or WSL provide it, plain PowerShell does not.
 
 ## 22. GitLab CI
@@ -1088,8 +1098,23 @@ npx --yes visimark@0.1.5 check $files
 `--diff-filter=ACM` skips deletions, which would otherwise be handed to the tool
 as paths that no longer exist and come back as exit `2`.
 
-With the [pre-commit](https://pre-commit.com) framework, in
+With the [pre-commit](https://pre-commit.com) framework, four lines in
 `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/michal-niedzwiedzki/visimark
+    rev: v0.1.7
+    hooks:
+      - id: visimark
+```
+
+`pre-commit autoupdate` moves `rev:` forward as releases ship. Under the hood
+the hook tries an already-installed `visimark` first, then Bun's `bunx`, then
+npm's `npx` — so it works whether the machine has Node, Bun, or both.
+
+Without the framework, or to pin the fetch command yourself, the same recipe
+by hand:
 
 ```yaml
 repos:
@@ -1098,12 +1123,12 @@ repos:
       - id: visimark
         name: visimark check
         language: system
-        entry: npx --yes visimark@0.1.5 check
+        entry: npx --yes visimark@0.1.7 check
         files: \.md$
 ```
 
-The framework passes the staged file names as arguments, which is exactly the
-shape `visimark check` wants.
+Either way, the framework passes the staged file names as arguments, which is
+exactly the shape `visimark check` wants.
 
 A hook checks only staged files, so it cannot see the CSV-import case from
 chapter 19 or the coverage-of-the-whole-repository case from chapter 11. Keep the
@@ -1111,9 +1136,144 @@ CI job.
 
 ---
 
+## 24. The `remark`/`unified` plugin
+
+A project already running [`remark`](https://remark.js.org)/`remark-lint` —
+Docusaurus, Astro, or any other `unified`-based Markdown toolchain — adds
+VisiMark findings to that same pipeline with `remark-lint-visimark`:
+
+```json
+{ "plugins": ["remark-preset-lint-recommended", "remark-lint-visimark"] }
+```
+
+```console
+$ npx remark docs/ --frail
+docs/quote.md
+  12:1  error  0.4266 <= 2.00 is false  visimark-assert  visimark
+
+1 error
+$ echo $?
+1
+```
+
+`--frail` is `remark-cli`'s own flag, not this plugin's: a `STALE` cell or any
+other check-failing finding is always fatal and fails a plain `remark` run;
+advisory findings (`WARN`, `NOTE`) are reported but only fail the run under
+`--frail`, the same severity split `check`'s own exit code already uses.
+
+The plugin takes no options, reports a line but no column, and does no
+autofix — see the package's own
+[README](https://github.com/michal-niedzwiedzki/visimark/tree/master/packages/remark-visimark)
+for the full contract. Like the other entries in this part, it only ever runs
+`check`; `fmt`, `infer`, `explain`, `eval` and `--json` are unaffected and
+unavailable through it.
+
+---
+
+## 25. The `markdownlint` custom rule
+
+A project already running
+[`markdownlint`](https://github.com/DavidAnson/markdownlint) or
+`markdownlint-cli2` gets the same findings in that run with
+`markdownlint-rule-visimark` — two entries in the config it already has:
+
+```jsonc
+{
+  "config": {
+    "extends": "markdownlint-rule-visimark/recommended",
+    "default": true
+  },
+  "customRules": ["markdownlint-rule-visimark"]
+}
+```
+
+`extends` goes **inside** `config`. It is a `markdownlint` config property, not
+a `markdownlint-cli2` one, and at the top level it is quietly ignored — the run
+then reports advisory findings you asked it not to.
+
+```console
+$ npx markdownlint-cli2 "docs/**/*.md"
+docs/quote.md:7 error visimark-assert An `assert` statement evaluated false [assert spent <= budget: 5 <= 1 is false]
+
+Summary: 1 issue in 1 file
+$ echo $?
+1
+```
+
+There is one rule per finding kind, named after it — `visimark-stale`,
+`visimark-assert`, `visimark-coverage`, and so on for all seventeen, plus an
+eighteenth, `visimark-engine-error`, that reports once if `visimark` itself
+fails to analyse the document rather than finding something wrong with it.
+The seventeen finding-kind rules are the same identifiers the `remark` plugin
+in chapter 24 reports as its `ruleId`. That gives three switches, all
+`markdownlint`'s own rather than anything this package invented:
+
+| `config` entry | Effect |
+|---|---|
+| `"visimark-date": false` | one finding kind off |
+| `"visimark-advisory": false` | the advisory kinds (`WARN`, `NOTE`) off |
+| `"visimark": false` | every VisiMark rule off |
+
+`recommended` is the middle one of those, and nothing else:
+`{ "visimark-advisory": false }`. It exists because `markdownlint` has no
+non-fatal tier — every violation fails the run — while `check` does not fail on
+advisory findings. Without the fragment, a document `visimark check` passes
+with exit `0` fails `markdownlint-cli2` with exit `1`. Extending it gives you a
+run whose exit code agrees with `check`'s; not extending it gives you every
+finding, which is a reasonable choice too.
+
+One number will not match, by design. A stale cell with prose anchors bound to
+it produces one summary finding on top of the cell's own, and this package
+reports the cell rather than the summary, so anchors are not counted twice.
+`visimark check docs/example-invoice-drift.md` prints
+`26 problems (21 stale, 5 errors)` where the same document reports `18 issues`
+here — the difference is exactly the eight prose anchors folded into that
+summary. **The exit codes agree in every case**; the headline number is the only
+thing that differs, and the exit code is what a CI gate reads.
+
+Like the other entries in this part, it only ever runs `check`: it takes no
+options, does no autofix (`markdownlint-cli2 --fix` leaves these rules alone),
+reports a line but no column, and `fmt`, `infer`, `explain`, `eval` and
+`--json` are not reachable through it. See the package's own
+[README](https://github.com/michal-niedzwiedzki/visimark/tree/master/packages/markdownlint-visimark)
+for the full contract.
+
+## 29. The MCP server
+
+The other entries in this part put VisiMark in a pipeline. This one puts it in
+front of an agent — one working in a repository that has never heard of the
+project, with no clone and no reason to look for a CLI.
+
+```bash
+npm i -g visimark-mcp   # or: bun add -g visimark-mcp
+claude mcp add visimark -- npx -y visimark-mcp
+```
+
+`visimark-mcp` serves every command as a tool over stdio, the authoring
+discipline as resources, and two prompts. It imports the engine as a library,
+so a document the agent is drafting in context needs no temp file: the read
+tools take `content` as readily as `path`.
+
+**It does not replace the CI check, and it is not a gate.** A gate is a thing
+that fails a build; this is a thing an agent consults. Keep
+`visimark check **/*.md` in the workflow whatever else you run, for the reason
+chapter 3 gives — an agent that can read a verdict can also decide not to.
+
+**It is read-only by default**, and deliberately hard to make otherwise. The
+apply tools refuse unless the server was started with `--allow-write` *and* the
+host declared at least one root; no roots means no writes, even with the flag.
+Neither condition is reachable from a tool call, which is the point. For a CI
+context the answer is almost always to leave the gate shut and let the agent
+propose a plan a human applies.
+
+The full surface — every tool, what it reads, what it writes, which annotation
+it carries — is [`mcp.md`](mcp.md).
+
+---
+
 # Part 7 — Rolling it out
 
-## 24. Turning it on in a repository that already has documents
+## 26. Turning it on in a repository that already has documents
 
 Adding a blocking check to a repository full of unchecked documents will produce
 a wall of `COVERAGE` findings on the first run, and a strong urge to delete the
@@ -1163,7 +1323,7 @@ check: point it at the directory you have finished — `files: "quotes/**/*.md"`
 and widen it as you go. A narrow blocking check is worth more than a wide
 advisory one.
 
-## 25. Troubleshooting
+## 27. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -1176,7 +1336,7 @@ advisory one.
 | `COVERAGE` on a README or changelog | The file has a table and no rules | Chapter 10 — `infer`, or the marker |
 | The workflow runs twice on every PR commit | `on: [push, pull_request]` | Restrict `push` to your default branch |
 | The annotation step runs but the job is green | The check step has `continue-on-error` and nothing re-fails the job | Add the explicit `exit 1` step from chapter 14 |
-| A step prints a human report where JSON was expected | A misspelled flag — unknown options are ignored, not rejected | Check the spelling of `--json` |
+| A step fails with `unknown option` or `is only valid with` | A misspelled option, an option on the wrong command, or one this engine version does not know | Read the message: it names the option and, if misplaced, the command that owns it |
 | `shopt: not found` | The job's shell is `sh`, not bash | Use `bash -lc`, or the `find` form from chapter 21 |
 | `ARTIFACT` or a missing-artifact `STALE` on every run | Chart SVGs are in `.gitignore` | Commit them — chapter 19 |
 | A required check can never be satisfied | The required check only runs on `push` to the default branch | Require the job that runs on `pull_request` |
@@ -1194,7 +1354,7 @@ environment variable, no network call and no clock, so a local run and a CI run
 on the same bytes give the same answer. If they differ, the bytes differ — check
 what your workflow actually checked out.
 
-## 26. The checklist
+## 28. The checklist
 
 The complete workflow, with everything this guide recommends:
 
@@ -1259,5 +1419,6 @@ And the things to have done around it:
 | [`cli-reference.md`](cli-reference.md) | Every command, option, exit code and finding |
 | [`playground.html`](playground.html) | The real engine in your browser, nothing to install |
 | [`example-invoice-drift.md`](example-invoice-drift.md) | One input changed and nothing else — 26 findings, each walked through |
+| [`mcp.md`](mcp.md) | The MCP server: every tool, the write gate, the plan/apply split |
 
 <!--vmark:no-formulas-->

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- The engine now recognises `IRR(flows)`. A call that used to be reported as
+  an unknown function is evaluated, and a missing width on a written result is
+  the existing `PRECISION` diagnostic.
+
+- The engine now recognises `NPV(rate, flows)`. A call that used to be
+  reported as an unknown function is evaluated, and a missing width on a
+  written result is the existing `PRECISION` diagnostic.
+
+- The engine now recognises `PMT(rate, nper, pv)`. A call that used to be
+  reported as an unknown function is evaluated, and a missing width on a
+  written result is the existing `PRECISION` diagnostic.
+
+## 0.1.7 - 2026-09-22
+
+- Hover on a function written as `Σ(x)`, `√(x)`, `|x|`, `⌊x⌋` or `⌈x⌉` now
+  targets the glyph and shows the function's entry, with its prose spelling. It
+  no longer shows the entry over the first characters of the argument.
+
+## 0.1.6 - 2026-09-20
+
+- Division by zero (`/` or `MOD` with a zero divisor) is reported as a `TYPE`
+  diagnostic, "division by zero", instead of an unexplained stale value.
+- Documents that declare `param` scenario parameters no longer raise findings.
+  Scenarios are run from the CLI with `eval --scenario`, not from the editor.
+
 ## 0.1.5 - 2026-09-17
 
 - A binding's head may carry a `precision N` clause, and a value's decimal width

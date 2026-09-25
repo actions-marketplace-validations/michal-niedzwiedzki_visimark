@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { cleanPath, drift, driftPath } from "../examples.js";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { runCli } from "../../src/cli/main.js";
 
@@ -120,9 +121,11 @@ test("check passes a document that has a formula", async () => {
   expect(await runCli(["check", cleanPath], c.io)).toBe(0);
 });
 
-test("an unrecognised flag is ignored rather than failing the run", async () => {
+test("an unrecognised flag is refused with exit 2", async () => {
   const c = capture();
-  expect(await runCli(["check", cleanPath, "--require-formulas"], c.io)).toBe(0);
+  expect(await runCli(["check", cleanPath, "--require-formulas"], c.io)).toBe(2);
+  expect(c.err()).toBe("visimark: unknown option --require-formulas");
+  expect(c.out()).toBe("");
 });
 
 const pkgVersion = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"))
@@ -235,4 +238,83 @@ test("explain lists an aliased column's header", async () => {
   expect(code).toBe(0);
   expect(c.out()).toContain("aliases:");
   expect(c.out()).toContain('bpu → "Bandwidth per Unit (TB/s, full-duplex)"');
+});
+
+// --- prose notation for unary vocabulary (#64) ------------------------------
+
+const proseFixture = fileURLToPath(new URL("../fixtures/prose-notation.md", import.meta.url));
+
+test("eval on the prose-notation fixture prints the values of spec section 6", async () => {
+  const c = capture();
+  const code = await runCli(["eval", proseFixture], c.io);
+  expect(code).toBe(0);
+  expect(c.out()).toBe(
+    [
+      "a     7.5",
+      "b     10",
+      "abs1  2.5",
+      "abs2  1.5",
+      "abs3  32.5",
+      "fl    7",
+      "ce    8",
+      "fln   -8",
+      "mix   7",
+      "rt    4",
+      "ok    2.5",
+    ].join("\n"),
+  );
+});
+
+test("check passes the prose-notation fixture, and explain echoes the glyphs as written", async () => {
+  const check = capture();
+  expect(await runCli(["check", proseFixture], check.io)).toBe(0);
+  expect(check.out()).toContain("0 problems");
+  const explain = capture();
+  expect(await runCli(["explain", proseFixture], explain.io)).toBe(0);
+  expect(explain.out()).toContain("abs2 = ||a - b| - 1|");
+  expect(explain.out()).toContain("mix = ⌊|a - b| * 3⌋");
+  expect(explain.out()).toContain("rt = √(b + 6)");
+});
+
+const percentFixture = fileURLToPath(
+  new URL("../fixtures/percent-display-sigil.md", import.meta.url),
+);
+
+test("check passes the percent-display fixture", async () => {
+  const c = capture();
+  expect(await runCli(["check", percentFixture], c.io)).toBe(0);
+  expect(c.out()).toContain("0 problems");
+});
+
+test("eval --json on the percent-display fixture reports stored numbers", async () => {
+  const c = capture();
+  expect(await runCli(["eval", percentFixture, "--json"], c.io)).toBe(0);
+  const j = JSON.parse(c.out()) as { values: Record<string, string> };
+  expect(j.values["s.margin"]).toBe("0.4026");
+  expect(j.values["s.loss"]).toBe("-0.05");
+  expect(j.values["s.over"]).toBe("1.5");
+});
+
+test("fmt repairs a sabotaged percent span and is idempotent", async () => {
+  const src = readFileSync(percentFixture, "utf8").replace("**40.26%**", "**41.55%**");
+  const dir = mkdtempSync(join(tmpdir(), "vm-pct-"));
+  const path = join(dir, "p.md");
+  writeFileSync(path, src);
+  const check1 = capture();
+  expect(await runCli(["check", path], check1.io)).toBe(1);
+  expect(check1.out()).toContain("41.55% ≠ 40.26%");
+  const fmt1 = capture();
+  expect(await runCli(["fmt", path], fmt1.io)).toBe(0);
+  expect(readFileSync(path, "utf8")).toContain("**40.26%**<!--vmark=s.margin%-->");
+  const fmt2 = capture();
+  expect(await runCli(["fmt", path], fmt2.io)).toBe(0);
+  expect(fmt2.out()).toContain("unchanged");
+  const check2 = capture();
+  expect(await runCli(["check", path], check2.io)).toBe(0);
+});
+
+test("explain on a percent-display document does not mention the sigil", async () => {
+  const c = capture();
+  expect(await runCli(["explain", percentFixture], c.io)).toBe(0);
+  expect(c.out()).not.toContain("margin%");
 });

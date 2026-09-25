@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { createRequire } from "node:module";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertFailPath, cleanPath, drift, driftPath } from "../examples.js";
+import { assertFailPath, chartsPath, cleanPath, drift, driftPath } from "../examples.js";
 import { runCli } from "../../src/cli/main.js";
 
 const version = (createRequire(import.meta.url)("../../package.json") as { version: string })
@@ -100,11 +100,11 @@ test("check --json multi-file with one unreadable: READ, exit 2, other file list
   expect(files[1]!.findings).toBeUndefined();
 });
 
-test("check FILE --jsonn is ignored: human text, not JSON", async () => {
+test("check FILE --jsonn is refused: a did-you-mean on stderr, no report", async () => {
   const c = capture();
-  expect(await runCli(["check", cleanPath, "--jsonn"], c.io)).toBe(0);
-  expect(c.out()).toContain("0 problems");
-  expect(() => JSON.parse(c.out())).toThrow();
+  expect(await runCli(["check", cleanPath, "--jsonn"], c.io)).toBe(2);
+  expect(c.err()).toBe("visimark: unknown option --jsonn — did you mean `--json`?");
+  expect(c.out()).toBe("");
 });
 
 test("eval --json uses the envelope, not a flat map", async () => {
@@ -168,6 +168,51 @@ test("eval --json column with a null cell", async () => {
   const values = parseOut(c).values as { "t.Net": (string | null)[] };
   expect(values["t.Net"][0]).toBe("2");
   expect(values["t.Net"][1]).toBeNull();
+});
+
+test("eval --json omits division-by-zero bindings and never says Infinity", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "visimark-div0-"));
+  const p = join(dir, "div.md");
+  writeFileSync(
+    p,
+    `Net is 10<!--vmark=s.net-->. Ratio 1<!--vmark=s.r-->.
+
+\`\`\`vmark #s
+z = 0
+net precision 2 = 100 / z
+r precision 2 = 0 / z
+m = MOD(5, z)
+\`\`\`
+`,
+  );
+  const checkCap = capture();
+  expect(await runCli(["check", p], checkCap.io)).toBe(1);
+  const checkText = checkCap.out();
+  expect(checkText).toContain("TYPE");
+  expect(checkText).toContain("division by zero");
+  expect(checkText).not.toContain("STALE");
+  expect(checkText).not.toContain("Infinity");
+  expect(checkText).not.toContain("NaN");
+  expect(checkText).toContain("3 problems (0 stale, 3 errors)");
+
+  const before = readFileSync(p, "utf8");
+  const fmtCap = capture();
+  await runCli(["fmt", p], fmtCap.io);
+  expect(readFileSync(p, "utf8")).toBe(before);
+  expect(fmtCap.out()).toContain("unchanged");
+
+  const evalCap = capture();
+  expect(await runCli(["eval", p, "--json"], evalCap.io)).toBe(0);
+  const raw = evalCap.out();
+  expect(raw).not.toContain("Infinity");
+  expect(raw).not.toContain("NaN");
+  const j = parseOut(evalCap);
+  expect(j.status).toBe("ok");
+  const values = j.values as Record<string, string>;
+  expect(values["s.z"]).toBe("0");
+  expect(values["s.net"]).toBeUndefined();
+  expect(values["s.r"]).toBeUndefined();
+  expect(values["s.m"]).toBeUndefined();
 });
 
 test("fmt --json reports post-write facts and still rewrites the file", async () => {
@@ -285,4 +330,46 @@ test("explain --json lists an aliased column's header", async () => {
   expect(networkSheet?.aliases).toEqual([
     { symbol: "bpu", header: "Bandwidth per Unit (TB/s, full-duplex)" },
   ]);
+});
+
+// docs/design/a-no-artifacts-flag-for-fmt-spec.md §3 — the `--json` envelope.
+// `artifactsSkipped` is always present, so a consumer sees one shape whether or
+// not the flag was given.
+
+test("fmt --json --no-artifacts: artifacts empty, artifactsSkipped counts them", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vm-json-na-"));
+  const p = join(dir, "example-charts.md");
+  writeFileSync(p, readFileSync(chartsPath, "utf8"));
+
+  const c = capture();
+  const code = await runCli(["fmt", p, "--no-artifacts", "--json"], c.io);
+
+  expect(code).toBe(0);
+  expect(c.err()).toBe("");
+  const j = parseOut(c);
+  expect(j.command).toBe("fmt");
+  expect(j.status).toBe("ok");
+  const file = (j.files as Record<string, unknown>[])[0]!;
+  expect(file.artifacts).toEqual([]);
+  expect(file.artifactsSkipped).toBe(5);
+  expect(j.summary).toMatchObject({ artifacts: 0, artifactsSkipped: 5 });
+  // nothing was written beside the document
+  expect(existsSync(join(dir, "charts"))).toBe(false);
+});
+
+test("fmt --json without the flag: artifacts listed, artifactsSkipped present and 0", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vm-json-na2-"));
+  const p = join(dir, "example-charts.md");
+  writeFileSync(p, readFileSync(chartsPath, "utf8"));
+
+  const c = capture();
+  const code = await runCli(["fmt", p, "--json"], c.io);
+
+  expect(code).toBe(0);
+  const j = parseOut(c);
+  const file = (j.files as Record<string, unknown>[])[0]!;
+  expect((file.artifacts as unknown[]).length).toBe(5);
+  // always present, so the shape does not depend on the flag
+  expect(file.artifactsSkipped).toBe(0);
+  expect(j.summary).toMatchObject({ artifacts: 5, artifactsSkipped: 0 });
 });

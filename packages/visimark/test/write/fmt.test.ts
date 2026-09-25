@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { clean, drift } from "../examples.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { charts, clean, drift } from "../examples.js";
+import { onDisk } from "../../src/fs/node-reader.js";
 import { fmt } from "../../src/write/fmt.js";
 import { locate } from "../../src/parse/document.js";
 import { build } from "../../src/model/build.js";
@@ -84,6 +88,71 @@ Total: **1.00**<!--vmark=order.total-->
   }
 });
 
+test("fmt rewrites a stale cell but never rewrites a prose spelling to its named form", () => {
+  const table = `| Item | Price | Qty |   Gap |
+|------|------:|----:|------:|
+| pen  |  5.00 |   2 |  9.99 |
+`;
+  for (const [prose, named] of [
+    ["|Price - Qty|", "ABS(Price - Qty)"],
+    ["⌊Price⌋", "FLOOR(Price, 1)"],
+    ["⌈Price⌉", "CEILING(Price, 1)"],
+  ] as const) {
+    const src = `${table}
+\`\`\`vmark #order
+Gap precision 2 = ${prose}
+\`\`\`
+`;
+    const once = fmt(src, {});
+    expect(once.changed).toBe(true);
+    // the rule text keeps the author's own spelling, untouched
+    expect(once.output).toContain(`Gap precision 2 = ${prose}`);
+    expect(once.output).not.toContain(named);
+    expect(check(build(locate(once.output))).findings.filter((f) => f.code === "STALE")).toEqual(
+      [],
+    );
+    // idempotent
+    expect(fmt(once.output, {}).output).toBe(once.output);
+  }
+});
+
+test("fmt writes percent form on a % comment and is idempotent", () => {
+  const src = `Margin **0.4155**<!--vmark=s.margin%-->.
+
+\`\`\`vmark #s
+margin precision 4 = 0.4026
+\`\`\`
+`;
+  const once = fmt(src, {});
+  expect(once.changed).toBe(true);
+  expect(once.output).toContain("**40.26%**<!--vmark=s.margin%-->");
+  expect(fmt(once.output, {}).output).toBe(once.output);
+  expect(check(build(locate(once.output))).exitCode).toBe(0);
+});
+
+test("fmt without % rewrites a percent-shaped span to toFixed", () => {
+  const src = `Reserved **20.00%**<!--vmark=s.x-->.
+
+\`\`\`vmark #s
+x precision 2 = 20%
+\`\`\`
+`;
+  const once = fmt(src, {});
+  expect(once.output).toContain("**0.20**<!--vmark=s.x-->");
+  expect(once.output).not.toContain("20.00%");
+});
+
+test("fmt does not rewrite a % span that is PRECISION", () => {
+  const src = `X **1**<!--vmark=s.n%-->.
+
+\`\`\`vmark #s
+n precision 1 = 1
+\`\`\`
+`;
+  const once = fmt(src, {});
+  expect(once.output).toBe(src);
+});
+
 function diffLines(a: string, b: string): number {
   const la = a.split("\n");
   const lb = b.split("\n");
@@ -93,3 +162,57 @@ function diffLines(a: string, b: string): number {
   }
   return n;
 }
+
+// docs/design/a-no-artifacts-flag-for-fmt-spec.md §3 — the engine gate.
+
+test("noArtifacts withholds the artifacts and counts them, changing nothing else", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vm-fmt-na-"));
+  const p = join(dir, "example-charts.md");
+  writeFileSync(p, charts);
+  const doc = onDisk(p);
+
+  const plain = fmt(charts, { doc });
+  const declined = fmt(charts, { doc, noArtifacts: true });
+
+  // the five missing artifacts are found either way — one is withheld
+  expect(plain.artifacts).toHaveLength(5);
+  expect(plain.artifactsSkipped).toBe(0);
+  expect(declined.artifacts).toEqual([]);
+  expect(declined.artifactsSkipped).toBe(5);
+
+  // every other member of the result is untouched by the flag
+  expect(declined.output).toBe(plain.output);
+  expect(declined.changed).toBe(plain.changed);
+  expect(declined.cellsUpdated).toBe(plain.cellsUpdated);
+  expect(declined.anchorsUpdated).toBe(plain.anchorsUpdated);
+  expect(declined.datesFixed).toBe(plain.datesFixed);
+  expect(declined.stampsUpdated).toBe(plain.stampsUpdated);
+
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/**
+ * The regression that keeps `fmt --no-artifacts` at exit `0`.
+ *
+ * `cmdFmt` raises the exit code to `1` when `unfixable` is non-empty, and a
+ * chart's STALE finding is excluded from it by `FIXABLE_BY_FMT` — before the
+ * write loop runs, and so regardless of whether the SVG was written. That is
+ * load-bearing for the flag but holds only incidentally, which is why it is
+ * pinned here: move STALE out of `FIXABLE_BY_FMT` and `fmt --no-artifacts`
+ * silently starts failing the builds it exists to serve.
+ */
+test("a chart's STALE finding is never in the unfixable remainder", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vm-fmt-na2-"));
+  const p = join(dir, "example-charts.md");
+  writeFileSync(p, charts);
+  const doc = onDisk(p);
+
+  // the document really does have five stale charts to be tempted by
+  const found = check(build(locate(charts)), { doc });
+  expect(found.findings.filter((f) => f.code === "STALE")).toHaveLength(5);
+
+  expect(fmt(charts, { doc }).unfixable).toEqual([]);
+  expect(fmt(charts, { doc, noArtifacts: true }).unfixable).toEqual([]);
+
+  rmSync(dir, { recursive: true, force: true });
+});
