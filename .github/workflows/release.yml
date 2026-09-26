@@ -31,7 +31,7 @@ jobs:
       # On a dispatch with a `tag`, build that tag's tree rather than the
       # default branch: a backfill has to publish what was released, not what
       # master happens to hold now.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0 # the vocab issue-close step walks history back to the previous tag

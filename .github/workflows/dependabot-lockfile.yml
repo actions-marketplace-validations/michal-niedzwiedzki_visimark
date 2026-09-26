@@ -25,7 +25,7 @@ jobs:
     if: github.actor == 'dependabot[bot]' && startsWith(github.head_ref, 'dependabot/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.head_ref }}
           token: ${{ secrets.LOCKFILE_SYNC_TOKEN }}
